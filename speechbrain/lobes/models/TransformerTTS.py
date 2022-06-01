@@ -125,6 +125,7 @@ class TransformerTTS(nn.Module):
 
     def forward(self, phonemes, spectogram, mel_lengths, training=True):
         phoneme_feats = self.encPreNet(phonemes)
+        spectogram = spectogram.transpose(1, 2)
         spec_feats = self.decPreNet(spectogram)
 
         srcmask = get_key_padding_mask(phonemes, pad_idx=self.padding_idx)
@@ -154,14 +155,15 @@ class TransformerTTS(nn.Module):
             tgtattn = torch.clamp(tgtattn, min=0, max=1)
 
         tgtattn = tgtattn.repeat(self.dec_num_head, 1, 1)
-        output_mel_feats, memory, *_ = self.decoder(spec_feats, phoneme_feats,
+        output_mel_feats, sa, multiheadattn = self.decoder(spec_feats, phoneme_feats,
                                                     memory_mask=attn_mask,
                                                     tgt_mask=tgtattn,
                                                     memory_key_padding_mask=srcmask,
                                                     tgt_key_padding_mask=mask)
 
         mel_post, mel_linear, stop_token =  self.postNet(output_mel_feats)
-        return mel_post, mel_linear, stop_token
+        return mel_post, mel_linear, stop_token, multiheadattn, sa
+
 class TextMelCollate:
     """ Zero-pads model inputs and targets based on number of frames per step
     Arguments
@@ -224,6 +226,7 @@ class TextMelCollate:
 
         # include mel padded and gate padded
         mel_padded = torch.FloatTensor(len(batch), num_mels, max_target_len)
+        mel_shifted_padded = torch.FloatTensor(len(batch), num_mels, max_target_len)
         mel_padded.zero_()
 
         output_lengths = torch.LongTensor(len(batch))
@@ -232,6 +235,8 @@ class TextMelCollate:
             idx = ids_sorted_decreasing[i]
             mel = batch[idx][1]
             mel_padded[i, :, : mel.size(1)] = mel
+            mel_shifted_padded[i, :, 1: mel.size(1)] = mel[:, 1:]
+            mel_shifted_padded[i, :, 0] = torch.tensor(1)
             output_lengths[i] = mel.size(1)
             labels.append(raw_batch[idx]['label'])
             wavs.append(raw_batch[idx]['wav'])
@@ -244,6 +249,7 @@ class TextMelCollate:
             text_padded,
             input_lengths,
             mel_padded,
+            mel_shifted_padded,
             output_lengths,
             len_x,
             labels,

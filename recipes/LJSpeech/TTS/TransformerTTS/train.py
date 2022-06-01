@@ -44,8 +44,9 @@ class TransformerTTSBrain(sb.Brain, PretrainedModelMixin, ProgressSampleImageMix
         return criterion(predictions, y)
 
     def _remember_sample(self, batch, predictions):
-        mel_post, mel_linear, stop_token = predictions
+        mel_post, mel_linear, stop_token, multiheadattn, sa = predictions
         mel_target, mel_length, phon_len  = batch
+        self.multiheadattn = multiheadattn
         self.remember_progress_sample(
                                     target=self._clean_mel(mel_target, mel_length),
                                     pred=self._clean_mel(mel_post, mel_length)
@@ -68,7 +69,18 @@ class TransformerTTSBrain(sb.Brain, PretrainedModelMixin, ProgressSampleImageMix
             stats = {
                 "loss": stage_loss,
             }
-
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(2, 3, figsize=(12,4))
+        for i in range(len(self.multiheadattn)):
+            ax[i//3][i%3].imshow(self.multiheadattn[i][0].T.detach().cpu().numpy())
+        path = os.path.join(
+                self.hparams.progress_sample_path, str(epoch), 'mha.png'
+            )
+        if not os.path.exists(os.path.join(
+                self.hparams.progress_sample_path, str(epoch))):
+            os.makedirs(os.path.join(
+                    self.hparams.progress_sample_path, str(epoch)))
+        plt.savefig(path)
         # At the end of validation, we can write
         if stage == sb.Stage.VALID:
             # Update learning rate
@@ -155,6 +167,7 @@ def batch_to_gpu(batch):
         text_padded,
         input_lengths,
         mel_padded,
+        mel_shifted_padded,
         output_lengths,
         len_x,
         labels,
@@ -164,8 +177,9 @@ def batch_to_gpu(batch):
     input_lengths = to_gpu(input_lengths).long()
     max_len = torch.max(input_lengths.data).item()
     spectogram = to_gpu(mel_padded).float()
+    mel_shifted_padded = to_gpu(mel_shifted_padded).float()
     mel_lengths = to_gpu(output_lengths).long()
-    x = (phonemes, spectogram, mel_lengths)
+    x = (phonemes, mel_shifted_padded, mel_lengths)
     y = (spectogram, mel_lengths, input_lengths)
     return x, y
 
@@ -182,7 +196,8 @@ def criterion(model_output, targets):
 
     assert len(mel_target.shape) == 3
     stop_tokens = [torch.cat([torch.zeros((mel_length[i]-1)), torch.ones((1))]) for i in range(len(mel_length))]
-    mel_out, mel_out_postnet, stop_token_out = model_output
+    mel_out, mel_out_postnet, stop_token_out, multiheadattn, sa = model_output
+
     for i in range(mel_target.shape[0]):
         if i == 0:
             mel_post_loss = torch.nn.MSELoss()(mel_out_postnet[i, :mel_length[i], :], mel_target[i, :mel_length[i], :])

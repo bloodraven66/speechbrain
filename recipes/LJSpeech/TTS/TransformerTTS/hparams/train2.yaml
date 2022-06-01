@@ -3,12 +3,12 @@
 ###################################
 seed: 1234
 __set_seed: !apply:torch.manual_seed [!ref <seed>]
-output_folder: !ref /home/wtc8/Sathvik/speechbrain_contrib_codes/speechbrain_samples/transforertts/<seed>
+output_folder: !ref /home/wtc8/Sathvik/speechbrain_contrib_codes/speechbrain_samples/transformertts_exp/<seed>
 save_folder: !ref <output_folder>/save
 pretrained_path: !ref <save_folder>
 save_for_pretrained: True
 train_log: !ref <output_folder>/train_log.txt
-epochs: 2
+epochs: 2000
 progress_samples: True
 progress_samples_incremental: False
 progress_sample_path: !ref <output_folder>/samples
@@ -62,9 +62,9 @@ symbols_embedding_dim: 512
 
 # Encoder parameters
 pre_net_dropout: 0.1
-pre_net_num_layers: 5
+pre_net_num_layers: 3
 
-enc_num_layers: 3
+enc_num_layers: 6
 enc_num_head: 2
 enc_d_model: 256
 enc_ffn_dim: 1024
@@ -73,7 +73,7 @@ enc_v_dim: 256
 enc_dropout: 0.1
 
 # Decoder parameters
-dec_num_layers: 4
+dec_num_layers: 6
 dec_num_head: 2
 dec_d_model: 256
 dec_ffn_dim: 1024
