@@ -147,7 +147,7 @@ class AffineCouplingLayer(nn.Module):
 
     def infer(self, x, mel):
         x_a, x_b = self.split(x)
-        log_s, t = self.wn(xA, mel)
+        log_s, t = self.wn(x_a, mel)
         y_b = (x_b - t) / torch.exp(log_s)
         y_a = x_a
         return torch.cat([y_a, y_b], dim=1)
@@ -279,21 +279,20 @@ class WaveGlow(nn.Module):
             mel = mel.contiguous().view(mel.size(0), mel.size(1), -1)
             mel = mel.permute(0, 2, 1)
 
-            audio = torch.randn(spect.size(0),
+            audio = torch.randn(mel.size(0),
                                 self.inv_w_shape,
-                                spect.size(2), device=spect.device).to(spect.dtype)
-            print(audio.shape, spect.shape)
+                                mel.size(2), device=mel.device).to(mel.dtype)
             audio = torch.autograd.Variable(sigma * audio)
 
             for k in reversed(range(self.flow_steps)):
 
-                audio = self.affineCouplingLayer[k].infer(audio, spect)
+                audio = self.affine_couplin_later[k].infer(audio, mel)
 
-                audio = self.inv1x1layer[k].infer(audio)
+                audio = self.inv_1x1_layer[k].infer(audio)
 
                 if k % self.early_output_interval == 0 and k != 0:
-                    z = torch.randn(spect.size(0), self.early_output_num_channels, spect.size(
-                        2), device=spect.device).to(spect.dtype)
+                    z = torch.randn(mel.size(0), self.early_output_num_channels, mel.size(
+                        2), device=mel.device).to(mel.dtype)
                     audio = torch.cat((sigma * z, audio), 1)
 
             audio = audio.permute(
@@ -301,18 +300,18 @@ class WaveGlow(nn.Module):
                 audio.size(0), -1).data
             return audio
 
-m = WaveGlow(flow_steps=12,
-            early_output_interval=4,
-            early_output_num_channels=2,
-            squeeze_group=8,
-            mel_upsample_kernel_size=1024,
-            mel_upsample_kernel_stride=256,
-            n_mels=80,
-            lu_decom=False,
-            num_inv_layers=4,
-            wn_num_layers=4,
-            wn_kernel_size=3,
-            wn_num_channels=128,)
+# m = WaveGlow(flow_steps=12,
+#             early_output_interval=4,
+#             early_output_num_channels=2,
+#             squeeze_group=8,
+#             mel_upsample_kernel_size=1024,
+#             mel_upsample_kernel_stride=256,
+#             n_mels=80,
+#             lu_decom=False,
+#             num_inv_layers=4,
+#             wn_num_layers=4,
+#             wn_kernel_size=3,
+#             wn_num_channels=128,)
 # sr = 16000
 # nfft = 1024
 # hl = 256

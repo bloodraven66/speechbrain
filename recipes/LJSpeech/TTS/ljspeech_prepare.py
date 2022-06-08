@@ -26,7 +26,7 @@ WAVS = "wavs"
 
 
 def prepare_ljspeech_durations_enerdy_pitch_and_predefined_splits():
-    
+
     return
 
 def prepare_ljspeech(
@@ -225,7 +225,7 @@ def split_sets(data_folder, splits, split_ratio):
     return data_split, meta_csv
 
 
-def prepare_json(seg_lst, json_file, wavs_folder, csv_reader):
+def prepare_json(seg_lst, json_file, wavs_folder, csv_reader, max_len=100):
     """
     Creates json file given a list of indexes.
 
@@ -252,9 +252,11 @@ def prepare_json(seg_lst, json_file, wavs_folder, csv_reader):
         json_dict[id] = {
             "wav": wav,
             "label": label,
-            "segment": True if "train" in json_file else False,
+            # "segment": True if "train" in json_file else False,
+            "segment": True,
         }
-
+        if index == max_len:
+            break
     # Writing the dictionary to the json file
     with open(json_file, mode="w") as json_f:
         json.dump(json_dict, json_f, indent=2)

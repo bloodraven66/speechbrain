@@ -15,12 +15,15 @@ import sys
 sys.path.append('../../../../../')
 import torch
 import copy
+import torchaudio
 from hyperpyyaml import load_hyperpyyaml
 import speechbrain as sb
 from speechbrain.utils.data_utils import scalarize
 import torchaudio
 import os
+import logging
 
+logger = logging.getLogger(__name__)
 
 class WaveGlowBrain(sb.Brain):
 
@@ -34,24 +37,14 @@ class WaveGlowBrain(sb.Brain):
         return super().on_fit_start()
 
     def compute_forward(self, batch, stage):
-        batch = batch.to(self.device)
+
         mel, _ = batch.mel
         y, _ = batch.sig
+        mel = mel.to(self.device)
+        y = y.to(self.device)
+        self.last_batch = [mel, y]
+        self._remember_sample(mel, y)
         return self.hparams.model(mel.transpose(2, 1), y)
-
-    # def init_optimizers(self):
-    #     """Called during ``on_fit_start()``, initialize optimizers
-    #     after parameters are fully configured (e.g. DDP, jit).
-    #     """
-    #     if self.opt_class is not None:
-    #         opt_class = self.opt_class
-    #
-    #         self.optimizer = opt_class(self.hparams.model.parameters())
-    #
-    #         if self.checkpointer is not None:
-    #             self.checkpointer.add_recoverable(
-    #                 "optimizer", self.optimizer
-    #             )
 
 
     def compute_objectives(self, predictions, batch, stage):
@@ -79,19 +72,87 @@ class WaveGlowBrain(sb.Brain):
 
 
 
-    def _remember_sample(self, batch, predictions):
+    def _remember_sample(self, mel, y):
+        """Remembers samples of spectrograms and the batch for logging purposes
+        Arguments
+        ---------
+        batch: tuple
+            a training batch
+        predictions: tuple
+            predictions (raw output of the FastSpeech model)
+        """
+        self.hparams.progress_sample_logger.remember(
+            target=self.process_mel(mel),
+            raw_batch=self.hparams.progress_sample_logger.get_batch_sample(
+                {
+                    "audio": y,
+                    "mel_target": mel,
+                }
+            ),
+        )
 
-        pass
+    def process_mel(self, mel, index=0):
+
+        assert mel.dim() == 3
+        return torch.sqrt(torch.exp(mel[index]))
 
     def on_stage_end(self, stage, stage_loss, epoch):
-        return
+
+        # Store the train loss until the validation stage.
+        if stage == sb.Stage.TRAIN:
+            self.train_loss = stage_loss
+        # Summarize the statistics from the stage for record-keeping.
+        else:
+            stats = {
+                "loss": stage_loss,
+            }
+
+        # At the end of validation, we can write
+        if stage == sb.Stage.VALID:
+            # Update learning rate
+            self.last_epoch = epoch
+            lr = self.optimizer.param_groups[-1]["lr"]
+
+            # The train_logger writes a summary to stdout and to the logfile.
+            self.hparams.train_logger.log_stats(  # 1#2#
+                stats_meta={"Epoch": epoch, "lr": lr},
+                train_stats={"loss": self.train_loss},
+                valid_stats=stats,
+            )
+            output_progress_sample = (
+                self.hparams.progress_samples
+                and epoch % self.hparams.progress_samples_interval == 0
+                and epoch >= self.hparams.progress_samples_min_run
+            )
+
+            if output_progress_sample:
+                logger.info('Saving predicted samples')
+
+                self.hparams.progress_sample_logger.save(epoch)
+                self.run_inference()
+            # Save the current checkpoint and delete previous checkpoints.
+            #UNCOMMENT THIS
+            self.checkpointer.save_and_keep_only(meta=stats, min_keys=["loss"])
+        # We also write statistics about test data spectogramto stdout and to the logfile.
+        if stage == sb.Stage.TEST:
+            self.hparams.train_logger.log_stats(
+                {"Epoch loaded": self.hparams.epoch_counter.current},
+                test_stats=stats,
+            )
 
 
-    def run_inference_sample(self, name):
-        return
 
-    def save_audio(self, name, data, epoch):
-        return
+    def run_inference(self):
+        if self.last_batch is None:
+            return
+        audio = sb.dataio.dataio.read_audio('/data/Database/LJSpeech-1.1/wavs/LJ050-0174.wav')
+        audio = torch.FloatTensor(audio)
+        raw = self.hparams.mel_spectogram(audio=audio.squeeze(0)).unsqueeze(0).transpose(2, 1)
+        audio = self.hparams.model.infer(raw.to(self.device)).cpu()
+        path = os.path.join(self.hparams.progress_sample_path, str(self.last_epoch),  f"pred.wav")
+        torchaudio.save(path, audio, self.hparams.sample_rate)
+
+
 
 
 def dataio_prepare(hparams):
@@ -106,7 +167,6 @@ def dataio_prepare(hparams):
     def audio_pipeline(wav, segment):
         audio = sb.dataio.dataio.read_audio(wav)
         audio = torch.FloatTensor(audio)
-        audio = audio
         if segment:
             if audio.size(0) >= segment_size:
                 max_audio_start = audio.size(0) - segment_size
