@@ -1,0 +1,84 @@
+###################################
+# Experiment Parameters and setup #
+###################################
+seed: 1234
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+output_folder: !ref /home/wtc8/Sathvik/speechbrain_contrib_codes/speechbrain_samples/waveglow/<seed>
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+progress_sample_path: !ref <output_folder>/samples
+epochs: 500
+keep_checkpoint_interval: 50
+use_tensorboard: False
+
+#################################
+# Data files and pre-processing #
+#################################
+data_folder: !PLACEHOLDER # e.g, /datasets/ljspeech
+train_json: !ref <save_folder>/train.json
+valid_json: !ref <save_folder>/valid.json
+test_json: !ref <save_folder>/test.json
+
+splits: ["train", "valid"]
+split_ratio: [90, 10]
+################################
+# Audio Parameters             #
+################################
+skip_prep: False
+
+segment_size: 8192
+sample_rate: 22050
+hop_length: 256
+win_length: 1024
+n_mel_channels: 80
+n_fft: 1024
+n_stft: !ref <n_fft> // 2 + 1
+mel_fmin: 0.0
+mel_fmax: 8000
+mel_normalized: null
+power: 1
+norm: "slaney"
+mel_scale: "slaney"
+dynamic_range_compression: True
+
+################################
+# Optimization Hyperparameters #
+################################
+learning_rate: 0.0002
+weight_decay: 0.9999
+adam_b1: 0.8
+adam_b2: 0.99
+grad_clip_thresh: 1.0
+batch_size: 32 #minimum 2
+
+train_dataloader_opts:
+  batch_size: !ref <batch_size>
+  drop_last: False
+  num_workers: 8
+
+valid_dataloader_opts:
+  batch_size: 1
+  num_workers: 8
+  shuffle: False
+
+test_dataloader_opts:
+  batch_size: 1
+  num_workers: 8
+  shuffle: False
+
+
+
+#epoch object
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+  limit: !ref <epochs>
+
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+  save_file: !ref <train_log>
+
+#checkpointer
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+  checkpoints_dir: !ref <save_folder>
+  recoverables:
+    generator: !ref <generator>
+    discriminator: !ref <discriminator>
+    counter: !ref <epoch_counter>
