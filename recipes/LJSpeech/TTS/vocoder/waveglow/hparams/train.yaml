@@ -7,6 +7,9 @@ output_folder: !ref /home/wtc8/Sathvik/speechbrain_contrib_codes/speechbrain_sam
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 progress_sample_path: !ref <output_folder>/samples
+progress_samples_min_run: 10
+progress_samples_interval: 5
+progress_batch_sample_size: 4
 epochs: 500
 keep_checkpoint_interval: 50
 use_tensorboard: False
@@ -14,7 +17,7 @@ use_tensorboard: False
 #################################
 # Data files and pre-processing #
 #################################
-data_folder: !PLACEHOLDER # e.g, /datasets/ljspeech
+data_folder: /data/Database/LJSpeech-1.1/ # e.g, /datasets/ljspeech
 train_json: !ref <save_folder>/train.json
 valid_json: !ref <save_folder>/valid.json
 test_json: !ref <save_folder>/test.json
@@ -26,7 +29,7 @@ split_ratio: [90, 10]
 ################################
 skip_prep: False
 
-segment_size: 8192
+segment_size: 16000
 sample_rate: 22050
 hop_length: 256
 win_length: 1024
@@ -40,6 +43,7 @@ power: 1
 norm: "slaney"
 mel_scale: "slaney"
 dynamic_range_compression: True
+sigma: 1.0
 
 ################################
 # Optimization Hyperparameters #
@@ -50,6 +54,37 @@ adam_b1: 0.8
 adam_b2: 0.99
 grad_clip_thresh: 1.0
 batch_size: 32 #minimum 2
+
+#model params
+flow_steps: 12
+early_output_interval: 4
+early_output_num_channels: 2
+squeeze_group: 8
+mel_upsample_kernel_size: 1024
+mel_upsample_kernel_stride: 256
+n_mels: 80
+lu_decom: False
+num_inv_layers: 4
+wn_num_layers: 4
+wn_kernel_size: 3
+wn_num_channels: 128
+
+model: !new:speechbrain.lobes.models.WaveGlow.WaveGlow
+    flow_steps: !ref <flow_steps>
+    early_output_interval: !ref <early_output_interval>
+    early_output_num_channels: !ref <early_output_num_channels>
+    squeeze_group: !ref <squeeze_group>
+    mel_upsample_kernel_size: !ref <mel_upsample_kernel_size>
+    mel_upsample_kernel_stride: !ref <mel_upsample_kernel_stride>
+    n_mels: !ref <n_mels>
+    lu_decom: !ref <lu_decom>
+    num_inv_layers: !ref <num_inv_layers>
+    wn_num_layers: !ref <wn_num_layers>
+    wn_kernel_size: !ref <wn_kernel_size>
+    wn_num_channels: !ref <wn_num_channels>
+
+modules:
+    model: !ref <model>
 
 train_dataloader_opts:
   batch_size: !ref <batch_size>
@@ -66,7 +101,9 @@ test_dataloader_opts:
   num_workers: 8
   shuffle: False
 
-
+opt_class: !name:torch.optim.Adam
+    lr: !ref <learning_rate>
+    weight_decay: !ref <weight_decay>
 
 #epoch object
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
@@ -79,6 +116,25 @@ train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
   checkpoints_dir: !ref <save_folder>
   recoverables:
-    generator: !ref <generator>
-    discriminator: !ref <discriminator>
+    model: !ref <model>
     counter: !ref <epoch_counter>
+
+progress_sample_logger: !new:speechbrain.utils.train_logger.ProgressSampleLogger
+  output_path: !ref <progress_sample_path>
+  batch_sample_size: !ref <progress_batch_sample_size>
+  formats:
+    raw_batch: raw
+
+mel_spectogram: !name:speechbrain.lobes.models.Tacotron2.mel_spectogram
+  sample_rate: !ref <sample_rate>
+  hop_length: !ref <hop_length>
+  win_length: !ref <win_length>
+  n_fft: !ref <n_fft>
+  n_mels: !ref <n_mel_channels>
+  f_min: !ref <mel_fmin>
+  f_max: !ref <mel_fmax>
+  power: !ref <power>
+  normalized: !ref <mel_normalized>
+  norm: !ref <norm>
+  mel_scale: !ref <mel_scale>
+  compression: !ref <dynamic_range_compression>

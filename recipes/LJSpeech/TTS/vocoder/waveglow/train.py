@@ -12,6 +12,7 @@ Authors
 """
 
 import sys
+sys.path.append('../../../../../')
 import torch
 import copy
 from hyperpyyaml import load_hyperpyyaml
@@ -22,37 +23,65 @@ import os
 
 
 class WaveGlowBrain(sb.Brain):
-    def compute_forward(self, batch, stage):
-
-
-
-        return
-
-    def compute_objectives(self, predictions, batch, stage):
-
-
-
-        return
-
-    def evaluate_batch(self, batch, stage):
-
-        return
 
     def on_fit_start(self):
         """Gets called at the beginning of ``fit()``, on multiple processes
-        if ``distributed_count > 0`` and backend is ddp and initializes statistics
-        """
+        if ``distributed_count > 0`` and backend is ddp and initializes statistics"""
+        self.hparams.progress_sample_logger.reset()
         self.last_epoch = 0
         self.last_batch = None
         self.last_loss_stats = {}
         return super().on_fit_start()
 
-    def init_optimizers(self):
-        pass
+    def compute_forward(self, batch, stage):
+        batch = batch.to(self.device)
+        mel, _ = batch.mel
+        y, _ = batch.sig
+        return self.hparams.model(mel.transpose(2, 1), y)
+
+    # def init_optimizers(self):
+    #     """Called during ``on_fit_start()``, initialize optimizers
+    #     after parameters are fully configured (e.g. DDP, jit).
+    #     """
+    #     if self.opt_class is not None:
+    #         opt_class = self.opt_class
+    #
+    #         self.optimizer = opt_class(self.hparams.model.parameters())
+    #
+    #         if self.checkpointer is not None:
+    #             self.checkpointer.add_recoverable(
+    #                 "optimizer", self.optimizer
+    #             )
+
+
+    def compute_objectives(self, predictions, batch, stage):
+
+        return self.criterion(predictions)
+
+
+    def criterion(self, predictions):
+        sigma = self.hparams.sigma
+        z_final, log_det, log_s = predictions
+        for i, log_s_ in enumerate(log_s):
+            if i == 0:
+                log_s_total = torch.sum(log_s_)
+                log_det_W_total = log_det[i]
+            else:
+                log_s_total = log_s_total + torch.sum(log_s_)
+                log_det_W_total += log_det[i]
+
+        loss = torch.sum(z_final*z_final)/(2*sigma*sigma) - log_s_total - log_det_W_total
+        return loss/(z_final.size(0)*z_final.size(1)*z_final.size(2))
+
+    def fit_batch(self, batch):
+        result = super().fit_batch(batch)
+        return result
+
+
+
     def _remember_sample(self, batch, predictions):
 
-        mel, sig = batch
-        y_hat, scores_fake, feats_fake, scores_real, feats_real = predictions
+        pass
 
     def on_stage_end(self, stage, stage_loss, epoch):
         return
@@ -77,19 +106,18 @@ def dataio_prepare(hparams):
     def audio_pipeline(wav, segment):
         audio = sb.dataio.dataio.read_audio(wav)
         audio = torch.FloatTensor(audio)
-        audio = audio.unsqueeze(0)
+        audio = audio
         if segment:
-            if audio.size(1) >= segment_size:
-                max_audio_start = audio.size(1) - segment_size
+            if audio.size(0) >= segment_size:
+                max_audio_start = audio.size(0) - segment_size
                 audio_start = torch.randint(0, max_audio_start, (1,))
-                audio = audio[:, audio_start : audio_start + segment_size]
+                audio = audio[audio_start : audio_start + segment_size]
             else:
                 audio = torch.nn.functional.pad(
-                    audio, (0, segment_size - audio.size(1)), "constant"
+                    audio, (0, segment_size - audio.size(0)), "constant"
                 )
 
         mel = hparams["mel_spectogram"](audio=audio.squeeze(0))
-
         return mel, audio
 
     datasets = {}
@@ -111,7 +139,7 @@ if __name__ == "__main__":
 
     with open(hparams_file) as fin:
         hparams = load_hyperpyyaml(fin, overrides)
-
+    sb.utils.distributed.ddp_init_group(run_opts)
     # Create experiment directory
     sb.create_experiment_directory(
         experiment_directory=hparams["output_folder"],
@@ -137,27 +165,21 @@ if __name__ == "__main__":
     datasets = dataio_prepare(hparams)
 
     # Brain class initialization
-    hifi_gan_brain = HifiGanBrain(
+    waveglow_brain = WaveGlowBrain(
         modules=hparams["modules"],
-        opt_class=[
-            hparams["opt_class_generator"],
-            hparams["opt_class_discriminator"],
-            hparams["sch_class_generator"],
-            hparams["sch_class_discriminator"],
-        ],
+        opt_class=hparams["opt_class"],
         hparams=hparams,
         run_opts=run_opts,
         checkpointer=hparams["checkpointer"],
-    )
-
+        )
     if hparams["use_tensorboard"]:
-        hifi_gan_brain.tensorboard_logger = sb.utils.train_logger.TensorboardLogger(
+        waveglow_brain.tensorboard_logger = sb.utils.train_logger.TensorboardLogger(
             save_dir=hparams["output_folder"] + "/tensorboard"
         )
 
     # Training
-    hifi_gan_brain.fit(
-        hifi_gan_brain.hparams.epoch_counter,
+    waveglow_brain.fit(
+        waveglow_brain.hparams.epoch_counter,
         train_set=datasets["train"],
         valid_set=datasets["valid"],
         train_loader_kwargs=hparams["train_dataloader_opts"],
@@ -166,7 +188,7 @@ if __name__ == "__main__":
 
     # Test
     if "test" in datasets:
-        hifi_gan_brain.evaluate(
+        waveglow_brain.evaluate(
             datasets["test"],
             test_loader_kwargs=hparams["test_dataloader_opts"],
         )

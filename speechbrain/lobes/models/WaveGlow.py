@@ -49,9 +49,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 import sys
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 from torch.autograd import Variable
 import torch.nn.functional as F
-sys.path.append('../../../../../')
+sys.path.append('../../../')
 from speechbrain.nnet import CNN
 
 class WN(nn.Module):
@@ -137,18 +139,19 @@ class AffineCouplingLayer(nn.Module):
         return torch.split(x, split_size_or_sections=ts//2, dim=1)
 
     def forward(self, x, mel):
-        xA, xB = self.split(x)
-        logS, t = self.wn(xA, mel)
-        yB = torch.mul(torch.exp(logS), xB) + t
-        yA = xA
-        return torch.cat([yA, yB], dim=1), logS
+        x_a, x_b = self.split(x)
+        log_s, t = self.wn(x_a, mel)
+        y_b = torch.mul(torch.exp(log_s), x_b) + t
+        y_a = x_a
+        return torch.cat([y_a, y_b], dim=1), log_s
 
     def infer(self, x, mel):
-        xA, xB = self.split(x)
-        logS, t = self.wn(xA, mel)
-        yB = (xB - t) / torch.exp(logS)
-        yA = xA
-        return torch.cat([yA, yB], dim=1)
+        x_a, x_b = self.split(x)
+        log_s, t = self.wn(xA, mel)
+        y_b = (x_b - t) / torch.exp(log_s)
+        y_a = x_a
+        return torch.cat([y_a, y_b], dim=1)
+
 #implemented in https://arxiv.org/pdf/1807.03039.pdf (glow)
 class Inverstible1x1Conv(nn.Module):
     def __init__(self,
@@ -208,35 +211,35 @@ class WaveGlow(nn.Module):
                 wn_num_channels,
                 ):
         super().__init__()
-        self.upsampleMel = nn.ConvTranspose1d(n_mels,
+        self.upsample_mel = nn.ConvTranspose1d(n_mels,
                                             n_mels,
                                             mel_upsample_kernel_size,
                                             mel_upsample_kernel_stride)
-        inv1x1layer, affineCouplingLater = [], []
+        inv_1x1_layer, affine_couplin_later = [], []
         inv_w_shape = squeeze_group
         for idx in range(flow_steps):
             if idx % early_output_interval == 0 and idx >0:
 
                 inv_w_shape -= early_output_num_channels
-            inv1x1layer.append(Inverstible1x1Conv(num_inv_layers, lu_decom, inv_w_shape))
-            affineCouplingLater.append(AffineCouplingLayer(n_group=inv_w_shape,
+            inv_1x1_layer.append(Inverstible1x1Conv(num_inv_layers, lu_decom, inv_w_shape))
+            affine_couplin_later.append(AffineCouplingLayer(n_group=inv_w_shape,
                                                             total_n_group=squeeze_group,
                                                             wn_num_layers=wn_num_layers,
                                                             wn_kernel_size=wn_kernel_size,
                                                             wn_num_channels=wn_num_channels,
                                                             n_mels=n_mels))
-        self.inv1x1layer = nn.Sequential(*inv1x1layer)
-        self.affineCouplingLayer = nn.Sequential(*affineCouplingLater)
-        self.flowSteps = flow_steps
-        self.earlyOutputInterval = early_output_interval
-        self.earlyOutputNumChannels = early_output_num_channels
+        self.inv_1x1_layer = nn.Sequential(*inv_1x1_layer)
+        self.affine_couplin_later = nn.Sequential(*affine_couplin_later)
+        self.flow_steps = flow_steps
+        self.early_output_interval = early_output_interval
+        self.early_output_num_channels = early_output_num_channels
         self.squeeze_group = squeeze_group
         self.inv_w_shape = inv_w_shape
     #implemented in https://arxiv.org/pdf/1605.08803.pdf (real nvp)
-    def groupAud(self, x):
+    def group_audio(self, x):
         x = x.view(x.shape[0], self.squeeze_group, x.shape[1]//self.squeeze_group)
         return x
-    def groupMel(self, x):
+    def group_mel(self, x):
         bs, n_mels, ts = x.shape
         x = x.view(bs, n_mels, self.squeeze_group,ts//self.squeeze_group)
         x = x.reshape(bs, n_mels* self.squeeze_group, ts//self.squeeze_group)
@@ -246,52 +249,50 @@ class WaveGlow(nn.Module):
         assert mel.dim() == 3 and audio.dim() == 2
         bs, ts = audio.shape
         mel = mel.permute(0, 2, 1)
-        upsampledMel = self.upsampleMel(mel)[:, :, :ts]
+        up_sample_mel = self.upsample_mel(mel)[:, :, :ts]
+        z = self.group_audio(audio)
+        up_sample_mel = self.group_mel(up_sample_mel)
+        z_final, log_det, log_s = [], [], []
+        for idx in range(self.flow_steps):
 
-        z = self.groupAud(audio)
-        upsampledMel = self.groupMel(upsampledMel)
-        zFinal, logDet, logS = [], [], []
-
-        for idx in range(self.flowSteps):
-
-            if idx % self.earlyOutputInterval == 0 and idx != 0:
-                zFinal.append(z[:, :self.earlyOutputNumChannels, :])
-                z = z[:, self.earlyOutputNumChannels:, :]
-            z, layerLogDet = self.inv1x1layer[idx](z)
-            z, layerLogS = self.affineCouplingLayer[idx](z, upsampledMel)
-            logDet.append(layerLogDet)
-            logS.append(layerLogS)
+            if idx % self.early_output_interval == 0 and idx != 0:
+                z_final.append(z[:, :self.early_output_num_channels, :])
+                z = z[:, self.early_output_num_channels:, :]
+            z, layer_log_det = self.inv_1x1_layer[idx](z)
+            z, layer_log_s = self.affine_couplin_later[idx](z, up_sample_mel)
+            log_det.append(layer_log_det)
+            log_s.append(layer_log_s)
 
 
-        zFinal.append(z)
-        zFinal = torch.cat(zFinal, dim=1)
-        return zFinal, logDet, logS
+        z_final.append(z)
+        z_final = torch.cat(z_final, dim=1)
+        return z_final, log_det, log_s
 
-    def infer(self, spect, sigma=1.0):
-            assert spect.dim() == 3
-            spect = spect.permute(0, 2, 1)
-            spect = self.upsampleMel(spect)
-            time_cutoff = 1024 - 256
-            spect = spect[:, :, :-time_cutoff]
+    def infer(self, mel, sigma=1.0):
+            assert mel.dim() == 3
+            mel = mel.permute(0, 2, 1)
+            mel = self.upsample_mel(mel)
+            time_cutoff = self.upsample_mel.kernel_size[0] - self.upsample_mel.stride[0]
+            mel = mel[:, :, :-time_cutoff]
 
-            spect = spect.unfold(2, self.squeeze_group, self.squeeze_group).permute(0, 2, 1, 3)
-            spect = spect.contiguous().view(spect.size(0), spect.size(1), -1)
-            spect = spect.permute(0, 2, 1)
+            mel = mel.unfold(2, self.squeeze_group, self.squeeze_group).permute(0, 2, 1, 3)
+            mel = mel.contiguous().view(mel.size(0), mel.size(1), -1)
+            mel = mel.permute(0, 2, 1)
 
             audio = torch.randn(spect.size(0),
                                 self.inv_w_shape,
                                 spect.size(2), device=spect.device).to(spect.dtype)
-
+            print(audio.shape, spect.shape)
             audio = torch.autograd.Variable(sigma * audio)
 
-            for k in reversed(range(self.flowSteps)):
+            for k in reversed(range(self.flow_steps)):
 
                 audio = self.affineCouplingLayer[k].infer(audio, spect)
 
                 audio = self.inv1x1layer[k].infer(audio)
 
-                if k % self.earlyOutputInterval == 0 and k != 0:
-                    z = torch.randn(spect.size(0), self.earlyOutputNumChannels, spect.size(
+                if k % self.early_output_interval == 0 and k != 0:
+                    z = torch.randn(spect.size(0), self.early_output_num_channels, spect.size(
                         2), device=spect.device).to(spect.dtype)
                     audio = torch.cat((sigma * z, audio), 1)
 
@@ -300,24 +301,28 @@ class WaveGlow(nn.Module):
                 audio.size(0), -1).data
             return audio
 
-# m = WaveGlow(flow_steps=12,
-#             early_output_interval=4,
-#             early_output_num_channels=2,
-#             squeeze_group=8,
-#             mel_upsample_kernel_size=1024,
-#             mel_upsample_kernel_stride=256,
-#             n_mels=80,
-#             lu_decom=False,
-#             num_inv_layers=4,
-#             wn_num_layers=4,
-#             wn_kernel_size=3,
-#             wn_num_channels=128,)
+m = WaveGlow(flow_steps=12,
+            early_output_interval=4,
+            early_output_num_channels=2,
+            squeeze_group=8,
+            mel_upsample_kernel_size=1024,
+            mel_upsample_kernel_stride=256,
+            n_mels=80,
+            lu_decom=False,
+            num_inv_layers=4,
+            wn_num_layers=4,
+            wn_kernel_size=3,
+            wn_num_channels=128,)
 # sr = 16000
 # nfft = 1024
 # hl = 256
 # nmel = 80
-# aud = torch.rand((2, int(sr*2))) #needs to be %num group
-# mel = torch.rand((2, int(sr*2/hl), nmel))
-# # out = m(mel, aud)
-# out = m.infer(mel)
-# print(out.shape, aud.shape)
+# torch.manual_seed(0)
+#
+# aud = torch.ones((1, int(sr*2))) #needs to be %num group
+# mel = torch.ones((1, int(sr*2/hl), nmel))
+# z_final, log_det, log_s = m(mel, aud)
+# print(z_final.shape,[l.shape for l in log_s], [l.shape for l in log_det], )
+# print(torch.sum(z_final, dim=2))
+# # out = m.infer(mel)
+# # print(out.shape, aud.shape)
