@@ -19,6 +19,7 @@ train_annotation: !ref <output_folder>/train.json
 valid_annotation: !ref <output_folder>/dev.json
 test_annotation: !ref <output_folder>/test.json
 skip_prep: False # Skip data preparation
+uppercase: False # Must be True when the TIMIT dataset is in the upper-case version
 
 # Training parameters
 number_of_epochs: 50
@@ -82,7 +83,7 @@ compute_features: !new:speechbrain.lobes.features.Fbank
     n_mels: !ref <n_mels>
 
 model: !new:speechbrain.lobes.models.CRDNN.CRDNN
-    input_shape: [null, null, !ref <n_mels>]
+    input_size: !ref <n_mels>
     activation: !ref <activation>
     dropout: !ref <dropout>
     cnn_blocks: !ref <cnn_blocks>

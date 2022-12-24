@@ -14,6 +14,7 @@ import random
 from collections import Counter
 import logging
 import torchaudio
+from tqdm.contrib import tzip
 from speechbrain.utils.data_utils import download_file, get_all_files
 from speechbrain.dataio.dataio import (
     load_pkl,
@@ -64,7 +65,7 @@ def prepare_librispeech(
     merge_name: str
         Name of the merged csv file.
     create_lexicon: bool
-        If True, it outputs csv files contaning mapping between graphene
+        If True, it outputs csv files containing mapping between grapheme
         to phonemes. Use it for training a G2P system.
     skip_prep: bool
         If True, data preparation is skipped.
@@ -73,9 +74,11 @@ def prepare_librispeech(
     Example
     -------
     >>> data_folder = 'datasets/LibriSpeech'
-    >>> splits = ['train-clean-100', 'dev-clean', 'test-clean']
+    >>> tr_splits = ['train-clean-100']
+    >>> dev_splits = ['dev-clean']
+    >>> te_splits = ['test-clean']
     >>> save_folder = 'librispeech_prepared'
-    >>> prepare_librispeech(data_folder, splits, save_folder)
+    >>> prepare_librispeech(data_folder, save_folder, tr_splits, dev_splits, te_splits)
     """
 
     if skip_prep:
@@ -148,13 +151,13 @@ def prepare_librispeech(
 
 def create_lexicon_and_oov_csv(all_texts, data_folder, save_folder):
     """
-    Creates lexicon csv files useful for traning and testing a
-    graphene-to-phonene (G2P) model.
+    Creates lexicon csv files useful for training and testing a
+    grapheme-to-phoneme (G2P) model.
 
     Arguments
     ---------
     all_text : dict
-        Dictionary contaning text from the librispeech transcriptions
+        Dictionary containing text from the librispeech transcriptions
     data_folder : str
         Path to the folder where the original LibriSpeech dataset is stored.
     save_folder : str
@@ -219,9 +222,9 @@ def split_lexicon(data_folder, split_ratio):
     Arguments
     ---------
     data_folder : str
-        Path to the folder contaning the lexicon.csv file to split.
+        Path to the folder containing the lexicon.csv file to split.
     split_ratio : list
-        List contaning the training, validation, and test split ratio. Set it
+        List containing the training, validation, and test split ratio. Set it
         to [80, 10, 10] for having 80% of material for training, 10% for valid,
         and 10 for test.
 
@@ -282,6 +285,9 @@ def create_csv(
     """
     # Setting path for the csv file
     csv_file = os.path.join(save_folder, split + ".csv")
+    if os.path.exists(csv_file):
+        logger.info("Csv file %s already exists, not recreating." % csv_file)
+        return
 
     # Preliminary prints
     msg = "Creating csv lists in  %s..." % (csv_file)
@@ -291,7 +297,8 @@ def create_csv(
 
     snt_cnt = 0
     # Processing all the wav files in wav_lst
-    for wav_file in wav_lst:
+    for wav_file in tzip(wav_lst):
+        wav_file = wav_file[0]
 
         snt_id = wav_file.split("/")[-1].replace(".flac", "")
         spk_id = "-".join(snt_id.split("-")[0:2])
@@ -326,7 +333,7 @@ def create_csv(
             csv_writer.writerow(line)
 
     # Final print
-    msg = "%s sucessfully created!" % (csv_file)
+    msg = "%s successfully created!" % (csv_file)
     logger.info(msg)
 
 

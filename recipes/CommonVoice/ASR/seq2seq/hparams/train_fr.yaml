@@ -52,6 +52,7 @@ test_dataloader_options:
 # BPE parameters
 token_type: unigram  # ["unigram", "bpe", "char"]
 character_coverage: 1.0
+label_smoothing: 0.0
 
 # Feature parameters (FBANKS etc)
 sample_rate: 16000
@@ -89,7 +90,7 @@ beam_size: 80
 eos_threshold: 1.5
 using_max_attn_shift: True
 max_attn_shift: 140
-ctc_weight_decode: 0.0
+# ctc_weight_decode: 0.0
 temperature: 1.50
 
 #
@@ -171,7 +172,7 @@ ctc_cost: !name:speechbrain.nnet.losses.ctc_loss
     blank_index: !ref <blank_index>
 
 seq_cost: !name:speechbrain.nnet.losses.nll_loss
-    label_smoothing: 0.1
+    label_smoothing: !ref <label_smoothing>
 
 modules:
     enc: !ref <enc>

@@ -3,12 +3,14 @@
 ###################################
 seed: 1234
 __set_seed: !apply:torch.manual_seed [!ref <seed>]
-output_folder: !ref /home/wtc8/Sathvik/speechbrain_contrib_codes/speechbrain_samples/transformertts_exp/<seed>
+output_folder: !ref /home/wtc8/Sathvik/speechbrain_contrib_codes/speechbrain_pr/recipes/LJSpeech/TTS/TransformerTTS/transformertts_exp/<seed>
 save_folder: !ref <output_folder>/save
 pretrained_path: !ref <save_folder>
 save_for_pretrained: True
 train_log: !ref <output_folder>/train_log.txt
-epochs: 2000
+epochs: 800
+keep_checkpoint_interval: 50
+
 progress_samples: True
 progress_samples_incremental: False
 progress_sample_path: !ref <output_folder>/samples
@@ -20,19 +22,21 @@ progress_batch_sample_size: 4
 # Data files and pre-processing #
 #################################
 data_folder: /data/Database/LJSpeech-1.1
-audio_folder: !ref <data_folder>/wavs
-train_data_path: !ref <data_folder>/metadata_train.csv
-valid_data_path: !ref <data_folder>/metadata_val.csv
-test_data_path: !ref <data_folder>/metadata_test.csv
+train_json: !ref <save_folder>/train.json
+valid_json: !ref <save_folder>/valid.json
+test_json: !ref <save_folder>/test.json
+splits: ["train", "valid"]
+split_ratio: [90, 10]
 
+skip_prep: False
 text_cleaners: ['english_cleaners']
 
 ################################
 # Audio Parameters             #
 ################################
-sample_rate: 16000
+sample_rate: 22050
 hop_length: 256
-win_length: null
+win_length: 1024
 n_mel_channels: 80
 n_fft: 1024
 n_stft: !ref <n_fft> // 2 + 1
@@ -50,14 +54,16 @@ mel_normalized: False
 learning_rate: 0.0001
 weight_decay: 0.000006
 grad_clip_thresh: 5.0
-batch_size: 40 #minimum 2
-mask_padding: False
-grad_accumulation_factor: 2
-
+batch_size: 48 #minimum 2
+guided_attention_sigma: 0.2
+guided_attention_weight: 50.0
+guided_attention_weight_half_life: 10.
+guided_attention_hard_stop: 50
+gate_loss_weight: 1.0
 ################################
 # Model Parameters and model   #
 ################################
-n_symbols: 62 #fixed deppending on symbols in textToSequence
+n_symbols: 148 #fixed deppending on symbols in textToSequence
 padding_idx: 0
 symbols_embedding_dim: 512
 
@@ -116,6 +122,16 @@ model: !new:speechbrain.lobes.models.TransformerTTS.TransformerTTS
 # Inverse spectrogram parameters
 inverse_spectrogram_n_iter: 1024
 
+guided_attention_scheduler: !new:speechbrain.nnet.schedulers.StepScheduler
+  initial_value: !ref <guided_attention_weight>
+  half_life: !ref <guided_attention_weight_half_life>
+
+criterion: !new:speechbrain.lobes.models.TransformerTTS.TTTSLoss
+  gate_loss_weight: !ref <gate_loss_weight>
+  guided_attention_weight: !ref <guided_attention_weight>
+  guided_attention_sigma: !ref <guided_attention_sigma>
+  guided_attention_scheduler: !ref <guided_attention_scheduler>
+  guided_attention_hard_stop: !ref <guided_attention_hard_stop>
 
 mel_spectogram: !name:speechbrain.lobes.models.TransformerTTS.mel_spectogram
   sample_rate: !ref <sample_rate>
@@ -167,7 +183,9 @@ epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
 train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
     save_file: !ref <train_log>
 
-
+noam_annealing: !new:speechbrain.nnet.schedulers.NoamScheduler
+    lr_initial: !ref <learning_rate>
+    n_warmup_steps: 25000
 
 #checkpointer
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
@@ -175,6 +193,7 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     recoverables:
         model: !ref <model>
         counter: !ref <epoch_counter>
+        noam_scheduler: !ref <noam_annealing>
 
 input_encoder: !new:speechbrain.dataio.encoder.TextEncoder
 
@@ -182,3 +201,9 @@ model_output_keys:
     - mel
     - mel_lengths
     - alignments
+
+progress_sample_logger: !new:speechbrain.utils.train_logger.ProgressSampleLogger
+  output_path: !ref <progress_sample_path>
+  batch_sample_size: !ref <progress_batch_sample_size>
+  formats:
+    raw_batch: raw

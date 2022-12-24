@@ -33,16 +33,15 @@ avoid_if_longer_than: 10.0
 ckpt_interval_minutes: 15 # save checkpoint every N min
 
 # Training parameters
-number_of_epochs: 40
-batch_size: 12
+number_of_epochs: 50
+batch_size: 32 # This works with a 32GB GPU ! (bs * nb_gpu * accum) > 128 !
 ctc_weight: 0.3
-gradient_accumulation: 8
-gradient_clipping: 5.0
+gradient_accumulation: 4
 loss_reduction: 'batchmean'
 sorting: random
 
 # stages related parameters
-stage_one_epochs: 30
+stage_one_epochs: 40
 lr_adam: 1.0
 lr_sgd: 0.00003
 
@@ -78,8 +77,7 @@ num_decoder_layers: 6
 d_ffn: 3072
 transformer_dropout: 0.0
 activation: !name:torch.nn.GELU
-output_neurons: 1000
-vocab_size: 1000
+output_neurons: 500
 
 # Outputs
 blank_index: 0
@@ -87,14 +85,13 @@ label_smoothing: 0.1
 pad_index: 0
 bos_index: 1
 eos_index: 2
-unk_index: 0
 
 # Decoding parameters
 min_decode_ratio: 0.0
 max_decode_ratio: 1.0
 valid_search_interval: 5
 valid_beam_size: 10
-test_beam_size: 80
+# test_beam_size: 80
 ctc_weight_decode: 0.3
 
 ############################## models ################################

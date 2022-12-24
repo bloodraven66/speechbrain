@@ -38,8 +38,9 @@ from torch.utils.data import DataLoader
 from torch.utils.data import IterableDataset
 from torch.utils.data.dataloader import _BaseDataLoaderIter
 import logging
+import warnings
 import functools
-from speechbrain.dataio.batch import PaddedBatch
+from speechbrain.dataio.batch import PaddedBatch, BatchsizeGuesser
 from speechbrain.dataio.dataset import DynamicItemDataset
 from speechbrain.dataio.sampler import ReproducibleRandomSampler
 from speechbrain.utils.checkpoints import (
@@ -48,10 +49,25 @@ from speechbrain.utils.checkpoints import (
     mark_as_loader,
 )
 
+# Optional support for webdataset
+try:
+    import webdataset as wds
+    from importlib_metadata import version
+
+    WDS_AVAILABLE = True
+
+    # Use appropriate class based on webdataset version
+    if version("webdataset")[0:4] == "0.1.":
+        WDS_CLASS = wds.dataset.Composable
+    else:
+        WDS_CLASS = wds.DataPipeline
+except ImportError:
+    WDS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
-def make_dataloader(dataset, **loader_kwargs):
+def make_dataloader(dataset, looped_nominal_epoch=None, **loader_kwargs):
     """Makes a basic DataLoader with SpeechBrain defaults.
 
     For DynamicItemDatasets (which return dicts), use
@@ -62,10 +78,20 @@ def make_dataloader(dataset, **loader_kwargs):
     If the Dataset is not an IterableDataset, the DataLoader
     is a SaveableDataLoader.
 
+    If the Dataset is a webdataset.dataset.Composable, set default
+    batch_size = None.
+
+    Can also loop over the underlying dataloader continuously,
+    and stop iterations at nominal epoch lengths.
+
     Arguments
     ---------
     dataset : Dataset
         The dataset to make a DataLoader for.
+    looped_nominal_epoch : None, int
+        If an integer is given, loop the underlying DataLoader infinitely and
+        set a nominal epoch length in batches (or whatever the DataLoader
+        yields).
     **loader_kwargs : dict
         Keyword args to DataLoader, see PyTorch DataLoader for
         options.
@@ -73,6 +99,9 @@ def make_dataloader(dataset, **loader_kwargs):
     Returns
     -------
     DataLoader
+        If looped_nominal_epoch is None
+    LoopedLoader
+        If looped_nominal_epoch is not None
     """
     # PaddedBatch as default collation for DynamicItemDataset
     if "collate_fn" not in loader_kwargs and isinstance(
@@ -94,11 +123,21 @@ def make_dataloader(dataset, **loader_kwargs):
         # However, this del doesn't touch those because loader_kwargs comes
         # from a **kwargs dict.
         del loader_kwargs["shuffle"]
+    # With WDS it is recommended to do batching in the dataset itself,
+    # which requires batch_size = None in the DataLoader
+    if (
+        WDS_AVAILABLE
+        and isinstance(dataset, WDS_CLASS)
+        and "batch_size" not in loader_kwargs
+    ):
+        loader_kwargs["batch_size"] = None
     # Create the loader
     if isinstance(dataset, IterableDataset):
         dataloader = DataLoader(dataset, **loader_kwargs)
     else:
         dataloader = SaveableDataLoader(dataset, **loader_kwargs)
+    if looped_nominal_epoch is not None:
+        dataloader = LoopedLoader(dataloader, looped_nominal_epoch)
     return dataloader
 
 
@@ -116,9 +155,17 @@ def __new_init(self, loader, *args, **kwargs):
         and loader._speechbrain_recovery_skip_to is not None
     ):
         # Fast forward the sampler iterator since we have recovered:
-        for _ in range(loader._speechbrain_recovery_skip_to):
-            next(self._sampler_iter)
-        self._num_yielded = loader._speechbrain_recovery_skip_to
+        for i in range(loader._speechbrain_recovery_skip_to):
+            try:
+                next(self._sampler_iter)
+            except StopIteration:
+                MSG = "Tried to fast-forward Sampler after checkpoint "
+                f"recovery by {loader._speechbrain_recovery_skip_to} "
+                "indices, but now Sampler raised StopIteration after "
+                f"{i} indices. Ignoring this mismatch."
+                warnings.warn(MSG)
+                break
+            self._num_yielded = i + 1
         # Mark recovery as done:
         loader._speechbrain_recovery_skip_to = None
 
@@ -202,12 +249,12 @@ class SaveableDataLoader(DataLoader):
     def _speechbrain_load(self, path, end_of_epoch, device=None):
         del device  # Unused here
         if self._speechbrain_iterator is not None:
-            logging.warning(
+            logging.debug(
                 "SaveableDataLoader was requested to load a "
-                "checkpoint, but the data loader has already been "
-                "iterated. Cannot load checkpoint here. Assuming that the "
-                "checkpoint was only loaded for e.g. retrieving the best "
-                "model"
+                "checkpoint, but the DataLoader has already been "
+                "iterated. The DataLoader file will be ignored. "
+                "This is normal in evaluation, when a checkpoint is "
+                "loaded just to retrieve the best model."
             )
             return
         if end_of_epoch:
@@ -221,3 +268,80 @@ class SaveableDataLoader(DataLoader):
                 return
             else:
                 self._speechbrain_recovery_skip_to = int(saved)
+
+
+@register_checkpoint_hooks
+class LoopedLoader:
+    """Loops an underlying iterable indefinitely, with nominal epoch lengths
+
+    This is useful for working with IterableDatasets, and particularly
+    webdataset-style loading. We recommend using ``.repeat()`` on the
+    webdataset IterableDataset instance, so that the underlying dataloader
+    naturally continues for ever.
+
+    Arguments
+    ---------
+    loader : iterable
+        A DataLoader or other iterable that is looped repeatedly.
+    epoch_length : int
+        The length of the nominal epoch. After this many steps, raises
+        StopIteration
+    """
+
+    def __init__(self, loader, epoch_length, batchsize_fn=None):
+        self.loader = loader
+        self.iterator = None
+        self.epoch_length = epoch_length
+        self.step = 0  # Step in epoch
+        self.total_steps = 0  # Total steps ever
+        self.total_samples = 0  # Total samples seen on this process
+        if batchsize_fn is None:
+            self.batchsize_fn = BatchsizeGuesser()
+
+    def __iter__(self):
+        if self.iterator is None:
+            self.iterator = iter(self.loader)
+        return self
+
+    def __next__(self):
+        if self.step < self.epoch_length:
+            self.step += 1
+            self.total_steps += 1
+            try:
+                batch = next(self.iterator)
+            except StopIteration:
+                self.iterator = iter(self.loader)
+                batch = next(self.iterator)
+            self.total_samples += self.batchsize_fn(batch)
+            return batch
+        else:
+            self.step = 0
+            raise StopIteration
+
+    def __len__(self):
+        return self.epoch_length
+
+    @mark_as_saver
+    def save(self, path):
+        """Saves the needed information."""
+        with open(path, "w") as fo:
+            print(self.step, file=fo)
+            print(self.total_steps, file=fo)
+            print(self.total_samples, file=fo)
+
+    @mark_as_loader
+    def load(self, path, end_of_epoch=True, device=None):
+        """Loads the needed information."""
+        del device  # Unused here
+        with open(path) as fi:
+            self.step = int(fi.readline().strip())
+            self.total_steps = int(fi.readline().strip())
+            self.total_samples = int(fi.readline().strip())
+            if not end_of_epoch and self.step == 0 and self.total_steps > 0:
+                # Step has been set to 0 at the end of iteration,
+                # so return it to epoch_length, so that first iteration
+                # of this will immediately raise StopIteration.
+                # Basically, this can happen when e.g. the main training
+                # loop has already finished but there is a checkpoint in the
+                # middle of validation.
+                self.step = self.epoch_length

@@ -130,7 +130,7 @@ class CBatchNorm(torch.nn.Module):
         self.reset_parameters()
 
     def reset_running_stats(self):
-        # Simply reset the running statistics to the initial values
+        """Simply reset the running statistics to the initial values."""
         # "Deep Complex Networks" Trabelsi C. et al.
         if self.track_running_stats:
             if self.center:
@@ -142,7 +142,7 @@ class CBatchNorm(torch.nn.Module):
             self.num_batches_tracked.zero_()
 
     def reset_parameters(self):
-        # Simply reset all the parameters.
+        """Simply reset all the parameters."""
         # "Deep Complex Networks" Trabelsi C. et al.
         self.reset_running_stats()
         if self.scale:
@@ -322,14 +322,14 @@ class CBatchNorm(torch.nn.Module):
         if input_shape[self.dim] % 2 == 0:
             return input_shape[self.dim] // 2
         else:
-            msg = "ComplexBatchNorm dim must be dividible by 2 ! Got " + str(
+            msg = "ComplexBatchNorm dim must be divisible by 2 ! Got " + str(
                 input_shape[self.dim]
             )
             raise ValueError(msg)
 
 
 class CLayerNorm(torch.nn.Module):
-    """This class is used to instanciate the complex
+    """This class is used to instantiate the complex
     layer-normalization as introduced by "Deep Complex Networks",
     Trabelsi C. et al.
 
@@ -398,7 +398,7 @@ class CLayerNorm(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # Simply reset all the parameters.
+        """Simply reset all the parameters."""
         # "Deep Complex Networks" Trabelsi C. et al.
         if self.scale:
             self.gamma_rr.data.fill_(1 / np.sqrt(2))
@@ -408,7 +408,7 @@ class CLayerNorm(torch.nn.Module):
             self.beta.data.zero_()
 
     def forward(self, input):
-
+        """Computes the complex normalization."""
         input_shape = input.size()
         ndim = input.dim()
         reduction_axes = list(range(ndim))

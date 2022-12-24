@@ -1,4 +1,4 @@
-"""Implentation of a Recurrent Language Model.
+"""Implementation of a Recurrent Language Model.
 
 Authors
  * Mirco Ravanelli 2020
@@ -99,7 +99,7 @@ class RNNLM(nn.Module):
         )
 
     def forward(self, x, hx=None):
-
+        """ Processes the input tensor x and returns an output tensor."""
         x = self.embedding(x)
         x = self.dropout(x)
 

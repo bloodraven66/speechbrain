@@ -10,6 +10,11 @@ import collections
 import itertools
 import logging
 import speechbrain as sb
+from speechbrain.utils.checkpoints import (
+    mark_as_saver,
+    mark_as_loader,
+    register_checkpoint_hooks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,7 @@ DEFAULT_EOS = "<eos>"
 DEFAULT_BLANK = "<blank>"
 
 
+@register_checkpoint_hooks
 class CategoricalEncoder:
     """Encode labels of a discrete set.
 
@@ -138,6 +144,7 @@ class CategoricalEncoder:
         self.handle_special_labels(special_labels)
 
     def handle_special_labels(self, special_labels):
+        """Handles special labels such as unk_label."""
         if "unk_label" in special_labels:
             self.add_unk(special_labels["unk_label"])
 
@@ -559,6 +566,7 @@ class CategoricalEncoder:
         except TypeError:  # Not an iterable, bottom level!
             return self.ind2lab[int(x)]
 
+    @mark_as_saver
     def save(self, path):
         """Save the categorical encoding for later use and recovery
 
@@ -598,7 +606,8 @@ class CategoricalEncoder:
         # If we're here, load was a success!
         logger.debug(f"Loaded categorical encoding from {path}")
 
-    def load_if_possible(self, path):
+    @mark_as_loader
+    def load_if_possible(self, path, end_of_epoch=False, device=None):
         """Loads if possible, returns a bool indicating if loaded or not.
 
         Arguments
@@ -627,6 +636,9 @@ class CategoricalEncoder:
         >>> encoder.decode_ndim(range(4))
         ['a', 'b', 'c', 'd']
         """
+        del end_of_epoch  # Unused here.
+        del device  # Unused here.
+
         try:
             self.load(path)
         except FileNotFoundError:
@@ -778,6 +790,7 @@ class TextEncoder(CategoricalEncoder):
     """
 
     def handle_special_labels(self, special_labels):
+        """Handles special labels such as bos and eos."""
         super().handle_special_labels(special_labels)
         # NOTE: bos_label and eos_label are not necessarily set at all!
         # This is because None is a suitable value.
@@ -970,6 +983,7 @@ class CTCTextEncoder(TextEncoder):
     """
 
     def handle_special_labels(self, special_labels):
+        """Handles special labels such as blanks."""
         # super().handle_special_labels(special_labels)
         # NOTE: blank_label is not necessarily set at all!
         # This is because None is a suitable value.

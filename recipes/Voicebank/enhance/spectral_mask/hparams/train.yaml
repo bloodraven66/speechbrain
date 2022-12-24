@@ -12,7 +12,7 @@ seed: 4234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 data_folder: /localscratch/noisy-vctk-16k
-test_clean_folder: !ref <data_folder>/clean_testset_wav_16k/
+# test_clean_folder: !ref <data_folder>/clean_testset_wav_16k/
 
 output_folder: !ref ./results/spectral_mask/<seed>
 save_folder: !ref <output_folder>/save
@@ -20,10 +20,10 @@ train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced_wavs
 
 # Basic parameters
-use_tensorboard: False
+use_tensorboard: True
 tensorboard_logs: !ref <output_folder>/logs/
 
-# FFT paremeters
+# FFT parameters
 Sample_rate: 16000
 Win_length: 32
 Hop_length: 16
@@ -86,8 +86,12 @@ resynth: !name:speechbrain.processing.signal_processing.resynthesize
     stft: !ref <compute_STFT>
     istft: !ref <compute_ISTFT>
 
-mean_var_norm: !new:speechbrain.processing.features.InputNormalization
-    norm_type: sentence
+# mean_var_norm: !new:speechbrain.processing.features.InputNormalization
+#     norm_type: sentence
 
 train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
     save_file: !ref <train_log>
+
+# Tensorboard logger (optional)
+tensorboard_train_logger: !new:speechbrain.utils.train_logger.TensorboardLogger
+    save_dir: !ref <tensorboard_logs>

@@ -26,7 +26,6 @@ def prepare_common_voice(
     dev_tsv_file=None,
     test_tsv_file=None,
     accented_letters=False,
-    duration_threshold=10,
     language="en",
     skip_prep=False,
 ):
@@ -50,10 +49,6 @@ def prepare_common_voice(
     accented_letters : bool, optional
         Defines if accented letters will be kept as individual letters or
         transformed to the closest non-accented letters.
-    duration_threshold : int, optional
-        Max duration (in seconds) to use as a threshold to filter sentences.
-        The CommonVoice dataset contains very long utterance mostly containing
-        noise due to open microphones.
     language: str
         Specify the language for text normalization.
     skip_prep: bool
@@ -76,7 +71,6 @@ def prepare_common_voice(
                  dev_tsv_file, \
                  test_tsv_file, \
                  accented_letters, \
-                 duration_threshold, \
                  language="en" \
                  )
     """
@@ -126,33 +120,14 @@ def prepare_common_voice(
     # Additional checks to make sure the data folder contains Common Voice
     check_commonvoice_folders(data_folder)
 
-    # Creating csv file for training data
-    if train_tsv_file is not None:
-
+    # Creating csv files for {train, dev, test} data
+    file_pairs = zip(
+        [train_tsv_file, dev_tsv_file, test_tsv_file],
+        [save_csv_train, save_csv_dev, save_csv_test],
+    )
+    for tsv_file, save_csv in file_pairs:
         create_csv(
-            train_tsv_file,
-            save_csv_train,
-            data_folder,
-            accented_letters,
-            language,
-        )
-
-    # Creating csv file for dev data
-    if dev_tsv_file is not None:
-
-        create_csv(
-            dev_tsv_file, save_csv_dev, data_folder, accented_letters, language,
-        )
-
-    # Creating csv file for test data
-    if test_tsv_file is not None:
-
-        create_csv(
-            test_tsv_file,
-            save_csv_test,
-            data_folder,
-            accented_letters,
-            language,
+            tsv_file, save_csv, data_folder, accented_letters, language,
         )
 
 
@@ -183,7 +158,7 @@ def skip(save_csv_train, save_csv_dev, save_csv_test):
 
 
 def create_csv(
-    orig_tsv_file, csv_file, data_folder, accented_letters=False, language="en",
+    orig_tsv_file, csv_file, data_folder, accented_letters=False, language="en"
 ):
     """
     Creates the csv file given a list of wav files.
@@ -235,6 +210,12 @@ def create_csv(
         spk_id = line.split("\t")[0]
         snt_id = file_name
 
+        # Setting torchaudio backend to sox-io (needed to read mp3 files)
+        if torchaudio.get_audio_backend() != "sox_io":
+            logger.warning("This recipe needs the sox-io backend of torchaudio")
+            logger.warning("The torchaudio backend is changed to sox_io")
+            torchaudio.set_audio_backend("sox_io")
+
         # Reading the signal (to retrieve duration in seconds)
         if os.path.isfile(mp3_path):
             info = torchaudio.info(mp3_path)
@@ -249,31 +230,62 @@ def create_csv(
         # Getting transcript
         words = line.split("\t")[2]
 
+        # Unicode Normalization
+        words = unicode_normalisation(words)
+
         # !! Language specific cleaning !!
         # Important: feel free to specify the text normalization
         # corresponding to your alphabet.
 
         if language in ["en", "fr", "it", "rw"]:
-            words = re.sub("[^'A-Za-z0-9À-ÖØ-öø-ÿЀ-ӿ]+", " ", words).upper()
+            words = re.sub(
+                "[^’'A-Za-z0-9À-ÖØ-öø-ÿЀ-ӿéæœâçèàûî]+", " ", words
+            ).upper()
+
+        if language == "de":
+            # this replacement helps preserve the case of ß
+            # (and helps retain solitary occurrences of SS)
+            # since python's upper() converts ß to SS.
+            words = words.replace("ß", "0000ß0000")
+            words = re.sub("[^’'A-Za-z0-9öÖäÄüÜß]+", " ", words).upper()
+            words = words.replace("'", " ")
+            words = words.replace("’", " ")
+            words = words.replace(
+                "0000SS0000", "ß"
+            )  # replace 0000SS0000 back to ß as its initial presence in the corpus
+
+        if language == "fr":
+            # Replace J'y D'hui etc by J_ D_hui
+            words = words.replace("'", " ")
+            words = words.replace("’", " ")
+
         elif language == "ar":
             HAMZA = "\u0621"
             ALEF_MADDA = "\u0622"
             ALEF_HAMZA_ABOVE = "\u0623"
             letters = (
-                "ابتةثجحخدذرزسشصضطظعغفقكلمنهويءآأؤإئ"
+                "ابتةثجحخدذرزسشصضطظعغفقكلمنهويىءآأؤإئ"
                 + HAMZA
                 + ALEF_MADDA
                 + ALEF_HAMZA_ABOVE
             )
-            words = re.sub("[^" + letters + "]+", " ", words).upper()
+            words = re.sub("[^" + letters + " ]+", "", words).upper()
+        elif language == "ga-IE":
+            # Irish lower() is complicated, but upper() is nondeterministic, so use lowercase
+            def pfxuc(a):
+                return len(a) >= 2 and a[0] in "tn" and a[1] in "AEIOUÁÉÍÓÚ"
+
+            def galc(w):
+                return w.lower() if not pfxuc(w) else w[0] + "-" + w[1:].lower()
+
+            words = re.sub("[^-A-Za-z'ÁÉÍÓÚáéíóú]+", " ", words)
+            words = " ".join(map(galc, words.split(" ")))
 
         # Remove accents if specified
         if not accented_letters:
-            nfkd_form = unicodedata.normalize("NFKD", words)
-            words = "".join(
-                [c for c in nfkd_form if not unicodedata.combining(c)]
-            )
+            words = strip_accents(words)
             words = words.replace("'", " ")
+            words = words.replace("’", " ")
 
         # Remove multiple spaces
         words = re.sub(" +", " ", words)
@@ -286,7 +298,7 @@ def create_csv(
         chars = " ".join([char for char in chars][:])
 
         # Remove too short sentences (or empty):
-        if len(words) < 3:
+        if len(words.split(" ")) < 3:
             continue
 
         # Composition of the csv_line
@@ -305,7 +317,7 @@ def create_csv(
             csv_writer.writerow(line)
 
     # Final prints
-    msg = "%s sucessfully created!" % (csv_file)
+    msg = "%s successfully created!" % (csv_file)
     logger.info(msg)
     msg = "Number of samples: %s " % (str(len(loaded_csv)))
     logger.info(msg)
@@ -339,3 +351,23 @@ def check_commonvoice_folders(data_folder):
             "the Common Voice dataset)" % (data_folder + files_str)
         )
         raise FileNotFoundError(err_msg)
+
+
+def unicode_normalisation(text):
+
+    try:
+        text = unicode(text, "utf-8")
+    except NameError:  # unicode is a default on python 3
+        pass
+    return str(text)
+
+
+def strip_accents(text):
+
+    text = (
+        unicodedata.normalize("NFD", text)
+        .encode("ascii", "ignore")
+        .decode("utf-8")
+    )
+
+    return str(text)

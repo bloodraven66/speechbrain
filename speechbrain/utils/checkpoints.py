@@ -58,6 +58,7 @@ import inspect
 import shutil
 import logging
 import warnings
+import speechbrain.utils._workarounds as __wa
 
 logger = logging.getLogger(__name__)
 
@@ -160,10 +161,16 @@ def torch_parameter_transfer(obj, path, device):
 DEFAULT_LOAD_HOOKS = {
     torch.nn.Module: torch_recovery,
     torch.optim.Optimizer: torch_recovery,
+    torch.optim.lr_scheduler._LRScheduler: torch_recovery,
+    torch.optim.lr_scheduler.ReduceLROnPlateau: torch_recovery,
+    torch.cuda.amp.grad_scaler.GradScaler: torch_recovery,
 }
 DEFAULT_SAVE_HOOKS = {
     torch.nn.Module: torch_save,
     torch.optim.Optimizer: torch_save,
+    torch.optim.lr_scheduler._LRScheduler: torch_save,
+    torch.optim.lr_scheduler.ReduceLROnPlateau: torch_save,
+    torch.cuda.amp.grad_scaler.GradScaler: torch_save,
 }
 DEFAULT_TRANSFER_HOOKS = {
     torch.nn.Module: torch_parameter_transfer,
@@ -181,6 +188,10 @@ try:
 except ImportError:
     # SentencePiece not loaded, fine!
     pass
+
+# Add workarounds:
+DEFAULT_SAVE_HOOKS[torch.optim.lr_scheduler.CyclicLR] = __wa._cycliclrsaver
+DEFAULT_LOAD_HOOKS[torch.optim.lr_scheduler.CyclicLR] = __wa._cycliclrloader
 
 
 def mark_as_saver(method):
@@ -494,7 +505,7 @@ class Checkpointer:
             self.recoverables.update(recoverables)
         else:
             rec = repr(recoverables)  # noqa: F841, rec is used in MSG
-            MSG = "Checkpointer needs a mapping (e.g. dict), \
+            MSG = f"Checkpointer needs a mapping (e.g. dict), \
                     got {rec} instead."
             raise AttributeError(MSG)
 
@@ -738,9 +749,11 @@ class Checkpointer:
         if max_key and not importance_key:
 
             def importance_key(ckpt):
+                "Defines the importance key."
                 return ckpt.meta[max_key]
 
             def ckpt_predicate(ckpt, old_predicate=ckpt_predicate):
+                "Checkpoints predicate."
                 if old_predicate is not None:
                     return max_key in ckpt.meta and old_predicate(ckpt)
                 else:
@@ -749,9 +762,11 @@ class Checkpointer:
         elif min_key and not importance_key:
 
             def importance_key(ckpt):
+                "Defines the importance key."
                 return -ckpt.meta[min_key]
 
             def ckpt_predicate(ckpt, old_predicate=ckpt_predicate):
+                "Checkpoints predicate."
                 if old_predicate is not None:
                     return min_key in ckpt.meta and old_predicate(ckpt)
                 else:
@@ -1088,6 +1103,7 @@ def average_checkpoints(
     recoverable_name,
     parameter_loader=torch.load,
     averager=average_state_dicts,
+    device=None,
 ):
     """Average parameters from multiple checkpoints.
 
@@ -1149,8 +1165,17 @@ def average_checkpoints(
     tensor([8.])
     """
 
-    parameter_iterator = (
-        parameter_loader(ckpt.paramfiles[recoverable_name])
-        for ckpt in checkpoint_list
-    )
+    try:
+        # try to map the ckps to the correct device
+        parameter_iterator = (
+            parameter_loader(
+                ckpt.paramfiles[recoverable_name], map_location=device
+            )
+            for ckpt in checkpoint_list
+        )
+    except TypeError:
+        parameter_iterator = (
+            parameter_loader(ckpt.paramfiles[recoverable_name])
+            for ckpt in checkpoint_list
+        )
     return averager(parameter_iterator)

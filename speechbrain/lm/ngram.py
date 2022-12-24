@@ -78,6 +78,7 @@ class BackoffNgramLM:
         self.top_order = order
 
     def logprob(self, token, context=tuple()):
+        """Computes the backoff log weights and applies them."""
         # If a longer context is given than we can ever use,
         # just use less context.
         query_order = len(context) + 1
@@ -109,7 +110,7 @@ def ngram_evaluation_details(data, LM):
     """
     Evaluates the N-gram LM on each sentence in data
 
-    Call `ngram_preplexity` with the output of this function to compute the
+    Call `ngram_perplexity` with the output of this function to compute the
     perplexity.
 
     Arguments

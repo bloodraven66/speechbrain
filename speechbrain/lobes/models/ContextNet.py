@@ -24,7 +24,7 @@ class ContextNet(Sequential):
     out_channels : int
         Number of output channels of this model (default 640).
     conv_channels : Optional (list[int])
-        Number of output channels for each of the contextnet block. If not provided, it will be initialized as the defualt setting of above mentioned paper.
+        Number of output channels for each of the contextnet block. If not provided, it will be initialized as the default setting of above mentioned paper.
     kernel_size : int
         Kernel size of convolution layers (default 3).
     strides: Optional (list[int])
@@ -184,7 +184,7 @@ class SEmodule(torch.nn.Module):
         )
 
     def forward(self, x):
-
+        """ Processes the input tensor x and returns an output tensor."""
         bz, t, chn = x.shape
 
         x = self.conv(x)
@@ -282,6 +282,7 @@ class ContextNetBlock(torch.nn.Module):
         self._reset_params()
 
     def forward(self, x):
+        """ Processes the input tensor x and returns an output tensor."""
         out = self.Convs(x)
         out = self.SE(out)
         if self.reduced_cov:

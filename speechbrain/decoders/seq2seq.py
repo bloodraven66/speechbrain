@@ -1,6 +1,7 @@
 """Decoding methods for seq2seq autoregressive model.
 
 Authors
+ * Adel Moumen 2022
  * Ju-Chieh Chou 2020
  * Peter Plantinga 2020
  * Mirco Ravanelli 2020
@@ -14,7 +15,7 @@ from speechbrain.decoders.ctc import CTCPrefixScorer
 
 class S2SBaseSearcher(torch.nn.Module):
     """S2SBaseSearcher class to be inherited by other
-    decoding approches for seq2seq model.
+    decoding approaches for seq2seq model.
 
     Arguments
     ---------
@@ -155,6 +156,15 @@ class S2SGreedySearcher(S2SBaseSearcher):
     """
 
     def forward(self, enc_states, wav_len):
+        """This method performs a greedy search.
+        Arguments
+        ---------
+        enc_states : torch.Tensor
+            The precomputed encoder states to be used when decoding.
+            (ex. the encoded speech representation to be attended).
+        wav_len : torch.Tensor
+            The speechbrain-style relative length.
+        """
         enc_lens = torch.round(enc_states.shape[1] * wav_len).int()
         device = enc_states.device
         batch_size = enc_states.shape[0]
@@ -184,6 +194,91 @@ class S2SGreedySearcher(S2SBaseSearcher):
         )
 
         return predictions, scores
+
+
+class S2SWhisperGreedySearch(S2SGreedySearcher):
+    """
+    This class implements the greedy decoding
+    for Whisper neural nets made by OpenAI in
+    https://cdn.openai.com/papers/whisper.pdf.
+
+    Arguments
+    ---------
+    model : HuggingFaceWhisper
+        The Whisper model.
+    **kwargs
+        see S2SBaseSearcher, arguments are directly passed.
+    """
+
+    def __init__(
+        self,
+        model,
+        language_token=50259,
+        bos_token=50258,
+        task_token=50359,
+        timestamp_token=50363,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.model = model
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.decoder_input_tokens = None
+        self.language_token = language_token  # default language is english
+        self.bos_token = bos_token  # always this value
+        self.task_token = task_token  # default task is transcribe
+        self.timestamp_token = timestamp_token  # default is notimestamp
+
+    def set_language_token(self, language_token):
+        """set the language token to be used for the decoder input."""
+        self.language_token = language_token
+
+    def set_bos_token(self, bos_token):
+        """set the bos token to be used for the decoder input."""
+        self.bos_token = bos_token
+
+    def set_task_token(self, task_token):
+        """set the task token to be used for the decoder input."""
+        self.task_token = task_token
+
+    def set_timestamp_token(self, timestamp_token):
+        """set the timestamp token to be used for the decoder input."""
+        self.timestamp_token = timestamp_token
+        # need to reset bos_index too as timestamp_token is the first
+        # inp_token and need to be the first so that the first input gave
+        # to the model is [bos, language, task, timestamp] (order matters).
+        self.bos_index = self.timestamp_token
+
+    def set_decoder_input_tokens(self, decoder_input_tokens):
+        """decoder_input_tokens are the tokens used as input to the decoder.
+        They are directly taken from the tokenizer.prefix_tokens attribute.
+
+        decoder_input_tokens = [bos_token, language_token, task_token, timestamp_token]
+        """
+        self.set_bos_token(decoder_input_tokens[0])
+        self.set_language_token(decoder_input_tokens[1])
+        self.set_task_token(decoder_input_tokens[2])
+        self.set_timestamp_token(decoder_input_tokens[3])
+
+        # bos will be timestamp in our case.
+        self.decoder_input_tokens = [
+            self.bos_token,
+            self.language_token,
+            self.task_token,
+        ]
+
+    def reset_mem(self, batch_size, device):
+        """This method set the first tokens to be decoder_input_tokens during search."""
+        return torch.tensor([self.decoder_input_tokens] * batch_size).to(device)
+
+    def forward_step(self, inp_tokens, memory, enc_states, enc_lens):
+        """Performs a step in the implemented beamsearcher."""
+        memory = _update_mem(inp_tokens, memory)
+        # WARNING: the max_decode_ratio need to be under 449 because
+        #  of positinal encoding
+        dec_out, attn = self.model.forward_decoder(enc_states, memory)
+        log_probs = self.softmax(dec_out[:, -1])
+
+        return log_probs, memory, attn
 
 
 class S2SRNNGreedySearcher(S2SGreedySearcher):
@@ -241,6 +336,7 @@ class S2SRNNGreedySearcher(S2SGreedySearcher):
         return hs, c
 
     def forward_step(self, inp_tokens, memory, enc_states, enc_lens):
+        """Performs a step in the implemented beamsearcher."""
         hs, c = memory
         e = self.emb(inp_tokens)
         dec_out, hs, c, w = self.dec.forward_step(
@@ -275,7 +371,7 @@ class S2SBeamSearcher(S2SBaseSearcher):
     eos_threshold : float
         The threshold coefficient for eos token (default: 1.5). See 3.1.2 in
         reference: https://arxiv.org/abs/1904.02619
-    length_normlization : bool
+    length_normalization : bool
         Whether to divide the scores by the length. (default: True)
     length_rewarding : float
         The coefficient of length rewarding (γ).
@@ -300,7 +396,7 @@ class S2SBeamSearcher(S2SBaseSearcher):
         Compute the ctc scores over the time frames using windowing based on attention peaks.
         If 0, no windowing applied.
     using_max_attn_shift: bool
-        Whether using the max_attn_shift constaint. (default: False)
+        Whether using the max_attn_shift constraint. (default: False)
     max_attn_shift: int
         Beam search will block the beams that attention shift more
         than max_attn_shift.
@@ -348,7 +444,7 @@ class S2SBeamSearcher(S2SBaseSearcher):
 
         if self.length_normalization and self.length_rewarding > 0:
             raise ValueError(
-                "length normalization is not compartiable with length rewarding."
+                "length normalization is not compatible with length rewarding."
             )
 
         self.using_eos_threshold = using_eos_threshold
@@ -373,7 +469,7 @@ class S2SBeamSearcher(S2SBaseSearcher):
                     "To perform joint ATT/CTC decoding, set blank, eos and bos to different indexes."
                 )
 
-        # ctc already initalized
+        # ctc already initialized
         self.minus_inf = minus_inf
         self.ctc_score_mode = ctc_score_mode
         self.ctc_window_size = ctc_window_size
@@ -486,7 +582,9 @@ class S2SBeamSearcher(S2SBaseSearcher):
             for index in eos_indices:
                 # convert to int
                 index = index.item()
-                batch_id = index // self.beam_size
+                batch_id = torch.div(
+                    index, self.beam_size, rounding_mode="floor"
+                )
                 if len(hyps_and_scores[batch_id]) == self.beam_size:
                     continue
                 hyp = alived_seq[index, :]
@@ -545,11 +643,12 @@ class S2SBeamSearcher(S2SBaseSearcher):
         topk_hyps = topk_hyps.view(batch_size, self.topk, -1)
         topk_lengths = torch.index_select(top_lengths, dim=0, index=indices,)
         topk_lengths = topk_lengths.view(batch_size, self.topk)
-        topk_log_probs = [top_lengths[index.item()] for index in indices]
+        topk_log_probs = [top_log_probs[index.item()] for index in indices]
 
         return topk_hyps, topk_scores, topk_lengths, topk_log_probs
 
     def forward(self, enc_states, wav_len):  # noqa: C901
+        """Applies beamsearch and returns the predicted tokens."""
         enc_lens = torch.round(enc_states.shape[1] * wav_len).int()
         device = enc_states.device
         batch_size = enc_states.shape[0]
@@ -704,7 +803,7 @@ class S2SBeamSearcher(S2SBaseSearcher):
 
             # The index of which beam the current top-K output came from in (t-1) timesteps.
             predecessors = (
-                candidates // vocab_size
+                torch.div(candidates, vocab_size, rounding_mode="floor")
                 + self.beam_offset.unsqueeze(1).expand_as(candidates)
             ).view(batch_size * self.beam_size)
 
@@ -784,7 +883,7 @@ class S2SBeamSearcher(S2SBaseSearcher):
                 timesteps=t,
             )
 
-            # Block the pathes that have reached eos.
+            # Block the paths that have reached eos.
             sequence_scores.masked_fill_(is_eos, float("-inf"))
 
         if not self._check_full_beams(hyps_and_scores, self.beam_size):
@@ -821,6 +920,7 @@ class S2SBeamSearcher(S2SBaseSearcher):
             return predictions, topk_scores
 
     def ctc_forward_step(self, x):
+        """Applies a ctc step during bramsearch."""
         logits = self.ctc_fc(x)
         log_probs = self.softmax(logits)
         return log_probs
@@ -929,12 +1029,14 @@ class S2SRNNBeamSearcher(S2SBeamSearcher):
         self.temperature = temperature
 
     def reset_mem(self, batch_size, device):
+        """Needed to reset the memory during beamsearch."""
         hs = None
         self.dec.attn.reset()
         c = torch.zeros(batch_size, self.dec.attn_dim, device=device)
         return hs, c
 
     def forward_step(self, inp_tokens, memory, enc_states, enc_lens):
+        """Performs a step in the implemented beamsearcher."""
         with torch.no_grad():
             hs, c = memory
             e = self.emb(inp_tokens)
@@ -948,6 +1050,7 @@ class S2SRNNBeamSearcher(S2SBeamSearcher):
         return log_probs, (hs, c), w
 
     def permute_mem(self, memory, index):
+        """Memory permutation during beamsearch."""
         hs, c = memory
 
         # shape of hs: [num_layers, batch_size, n_neurons]
@@ -1033,6 +1136,7 @@ class S2SRNNBeamSearchLM(S2SRNNBeamSearcher):
         self.temperature_lm = temperature_lm
 
     def lm_forward_step(self, inp_tokens, memory):
+        """Applies a step to the LM during beamsearch."""
         with torch.no_grad():
             logits, hs = self.lm(inp_tokens, hx=memory)
             log_probs = self.log_softmax(logits / self.temperature_lm)
@@ -1055,6 +1159,7 @@ class S2SRNNBeamSearchLM(S2SRNNBeamSearcher):
         return memory
 
     def reset_lm_mem(self, batch_size, device):
+        """Needed to reset the LM memory during beamsearch."""
         # set hidden_state=None, pytorch RNN will automatically set it to
         # zero vectors.
         return None
@@ -1127,6 +1232,7 @@ class S2SRNNBeamSearchTransformerLM(S2SRNNBeamSearcher):
         self.temperature_lm = temperature_lm
 
     def lm_forward_step(self, inp_tokens, memory):
+        """Performs a step in the LM during beamsearch."""
         memory = _update_mem(inp_tokens, memory)
         if not next(self.lm.parameters()).is_cuda:
             self.lm.to(inp_tokens.device)
@@ -1135,10 +1241,12 @@ class S2SRNNBeamSearchTransformerLM(S2SRNNBeamSearcher):
         return log_probs[:, -1, :], memory
 
     def permute_lm_mem(self, memory, index):
+        """Permutes the LM ,emory during beamsearch"""
         memory = torch.index_select(memory, dim=0, index=index)
         return memory
 
     def reset_lm_mem(self, batch_size, device):
+        """Needed to reset the LM memory during beamsearch"""
         # set hidden_state=None, pytorch RNN will automatically set it to
         # zero vectors.
         return None
@@ -1256,26 +1364,149 @@ class S2STransformerBeamSearch(S2SBeamSearcher):
         self.temperature_lm = temperature_lm
 
     def reset_mem(self, batch_size, device):
+        """Needed to reset the memory during beamsearch."""
         return None
 
     def reset_lm_mem(self, batch_size, device):
+        """Needed to reset the LM memory during beamsearch."""
         return None
 
     def permute_mem(self, memory, index):
+        """Permutes the memory."""
         memory = torch.index_select(memory, dim=0, index=index)
         return memory
 
     def permute_lm_mem(self, memory, index):
+        """Permutes the memory of the language model."""
         memory = torch.index_select(memory, dim=0, index=index)
         return memory
 
     def forward_step(self, inp_tokens, memory, enc_states, enc_lens):
+        """Performs a step in the implemented beamsearcher."""
         memory = _update_mem(inp_tokens, memory)
         pred, attn = self.model.decode(memory, enc_states)
         prob_dist = self.softmax(self.fc(pred) / self.temperature)
         return prob_dist[:, -1, :], memory, attn
 
     def lm_forward_step(self, inp_tokens, memory):
+        """Performs a step in the implemented LM module."""
+        memory = _update_mem(inp_tokens, memory)
+        if not next(self.lm_modules.parameters()).is_cuda:
+            self.lm_modules.to(inp_tokens.device)
+        logits = self.lm_modules(memory)
+        log_probs = self.softmax(logits / self.temperature_lm)
+        return log_probs[:, -1, :], memory
+
+
+class S2SWhisperBeamSearch(S2SBeamSearcher):
+    """This class implements the beam search decoding
+    for Whisper neural nets made by OpenAI in
+    https://cdn.openai.com/papers/whisper.pdf.
+
+    Arguments
+    ---------
+    module : list with the followings one:
+        model : torch.nn.Module
+            A whisper model. It should have a decode() method.
+        ctc_lin : torch.nn.Module (optional)
+            A linear output layer for CTC.
+    **kwargs
+        Arguments to pass to S2SBeamSearcher
+    """
+
+    def __init__(
+        self,
+        module,
+        temperature=1.0,
+        temperature_lm=1.0,
+        language_token=50259,
+        bos_token=50258,
+        task_token=50359,
+        timestamp_token=50363,
+        **kwargs,
+    ):
+        super(S2SWhisperBeamSearch, self).__init__(**kwargs)
+
+        self.model = module[0]
+        if len(module) == 2:
+            self.ctc_fc = module[1]
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.temperature = temperature
+        self.temperature_lm = temperature_lm
+
+        self.decoder_input_tokens = None
+        self.language_token = language_token  # default language is english
+        self.bos_token = bos_token  # always this value
+        self.task_token = task_token  # default task is transcribe
+        self.timestamp_token = timestamp_token  # default is notimestamp
+
+    def set_language_token(self, language_token):
+        """set the language token to use for the decoder input."""
+        self.language_token = language_token
+
+    def set_bos_token(self, bos_token):
+        """set the bos token to use for the decoder input."""
+        self.bos_token = bos_token
+
+    def set_task_token(self, task_token):
+        """set the task token to use for the decoder input."""
+        self.task_token = task_token
+
+    def set_timestamp_token(self, timestamp_token):
+        """set the timestamp token to use for the decoder input."""
+        self.timestamp_token = timestamp_token
+        # need to reset bos_index too as timestamp_token is the first
+        # inp_token and need to be the first so that the first input gave
+        # to the model is [bos, language, task, timestamp] (order matters).
+        self.bos_index = self.timestamp_token
+
+    def set_decoder_input_tokens(self, decoder_input_tokens):
+        """decoder_input_tokens are the tokens used as input to the decoder.
+        They are directly taken from the tokenizer.prefix_tokens attribute.
+
+        decoder_input_tokens = [bos_token, language_token, task_token, timestamp_token]
+        """
+        self.set_bos_token(decoder_input_tokens[0])
+        self.set_language_token(decoder_input_tokens[1])
+        self.set_task_token(decoder_input_tokens[2])
+        self.set_timestamp_token(decoder_input_tokens[3])
+
+        # bos will be timestamp in our case.
+        self.decoder_input_tokens = [
+            self.bos_token,
+            self.language_token,
+            self.task_token,
+        ]
+
+    def reset_mem(self, batch_size, device):
+        """This method set the first tokens to be decoder_input_tokens during search."""
+        return torch.tensor([self.decoder_input_tokens] * batch_size).to(device)
+
+    def reset_lm_mem(self, batch_size, device):
+        """Needed to reset the LM memory during beamsearch."""
+        return None
+
+    def permute_mem(self, memory, index):
+        """Permutes the memory."""
+        memory = torch.index_select(memory, dim=0, index=index)
+        return memory
+
+    def permute_lm_mem(self, memory, index):
+        """Permutes the memory of the language model."""
+        memory = torch.index_select(memory, dim=0, index=index)
+        return memory
+
+    def forward_step(self, inp_tokens, memory, enc_states, enc_lens):
+        """Performs a step in the implemented beamsearcher."""
+        memory = _update_mem(inp_tokens, memory)
+        dec_out, attn, = self.model.forward_decoder(enc_states, memory)
+        log_probs = self.softmax(dec_out[:, -1])
+        return log_probs, memory, attn
+
+    def lm_forward_step(self, inp_tokens, memory):
+        """Performs a step in the implemented LM module."""
         memory = _update_mem(inp_tokens, memory)
         if not next(self.lm_modules.parameters()).is_cuda:
             self.lm_modules.to(inp_tokens.device)

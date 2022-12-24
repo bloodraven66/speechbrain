@@ -1,15 +1,18 @@
 """
 This script contains basic functions used for speaker diarization.
-This script has an optional dependency on open source sklearn library.
-A few sklearn functions are modified in this script as per requirement.
+This script has an optional dependency on open source scikit-learn (sklearn) library.
+A few scikit-learn functions are modified in this script as per requirement.
 
 Reference
 ---------
+This code is written using the following:
+
 - Von Luxburg, U. A tutorial on spectral clustering. Stat Comput 17, 395–416 (2007).
   https://doi.org/10.1007/s11222-007-9033-z
 
-- sklearn:
-  https://github.com/scikit-learn/scikit-learn/blob/0fb307bf3/sklearn/cluster/_spectral.py
+- https://github.com/scikit-learn/scikit-learn/blob/0fb307bf3/sklearn/cluster/_spectral.py
+
+- https://github.com/tango4j/Auto-Tuning-Spectral-Clustering/blob/master/spectral_opt.py
 
 Authors
  * Nauman Dawalatabad 2020
@@ -36,15 +39,15 @@ try:
     from sklearn.cluster import SpectralClustering
     from sklearn.cluster._kmeans import k_means
 except ImportError:
-    err_msg = "The optional dependency sklearn is used in this module\n"
-    err_msg += "Cannot import sklearn. \n"
+    err_msg = "The optional dependency scikit-learn (sklearn) is used in this module\n"
+    err_msg += "Cannot import scikit-learn. \n"
     err_msg += "Please follow the below instructions\n"
     err_msg += "=============================\n"
     err_msg += "Using pip:\n"
-    err_msg += "pip install sklearn\n"
+    err_msg += "pip install scikit-learn\n"
     err_msg += "================================ \n"
     err_msg += "Using conda:\n"
-    err_msg += "conda install sklearn"
+    err_msg += "conda install scikit-learn"
     raise ImportError(err_msg)
 
 
@@ -289,7 +292,7 @@ def distribute_overlap(lol):
             # Update the current sub-segment
             sseg = next_sseg
 
-    # Add the remaning last sub-segment
+    # Add the remaining last sub-segment
     new_lol.append(next_sseg)
 
     return new_lol
@@ -357,8 +360,8 @@ def _graph_connected_component(graph, node_id):
     if sparse.issparse(graph):
         # speed up row-wise access to boolean connection mask
         graph = graph.tocsr()
-    connected_nodes = np.zeros(n_node, dtype=np.bool)
-    nodes_to_explore = np.zeros(n_node, dtype=np.bool)
+    connected_nodes = np.zeros(n_node, dtype=bool)
+    nodes_to_explore = np.zeros(n_node, dtype=bool)
     nodes_to_explore[node_id] = True
     for _ in range(n_node):
         last_num_component = connected_nodes.sum()
@@ -670,6 +673,8 @@ def spectral_clustering_sb(
 
 
 class Spec_Cluster(SpectralClustering):
+    """Performs spectral clustering using sklearn on embeddings."""
+
     def perform_sc(self, X, n_neighbors=10):
         """
         Performs spectral clustering using sklearn on embeddings.
@@ -735,23 +740,23 @@ class Spec_Clust_unorm:
      [0.904 0.982 0.928 1.    0.976]
      [0.966 0.997 0.972 0.976 1.   ]]
     >>> # Prunning
-    >>> prunned_sim_mat = clust.p_pruning(sim_mat, 0.3)
-    >>> print (np.around(prunned_sim_mat[5:,5:], decimals=3))
+    >>> pruned_sim_mat = clust.p_pruning(sim_mat, 0.3)
+    >>> print (np.around(pruned_sim_mat[5:,5:], decimals=3))
     [[1.    0.    0.    0.    0.   ]
      [0.    1.    0.    0.982 0.997]
      [0.    0.977 1.    0.    0.972]
      [0.    0.982 0.    1.    0.976]
      [0.    0.997 0.    0.976 1.   ]]
     >>> # Symmetrization
-    >>> sym_prund_sim_mat = 0.5 * (prunned_sim_mat + prunned_sim_mat.T)
-    >>> print (np.around(sym_prund_sim_mat[5:,5:], decimals=3))
+    >>> sym_pruned_sim_mat = 0.5 * (pruned_sim_mat + pruned_sim_mat.T)
+    >>> print (np.around(sym_pruned_sim_mat[5:,5:], decimals=3))
     [[1.    0.    0.    0.    0.   ]
      [0.    1.    0.489 0.982 0.997]
      [0.    0.489 1.    0.    0.486]
      [0.    0.982 0.    1.    0.976]
      [0.    0.997 0.486 0.976 1.   ]]
     >>> # Laplacian
-    >>> laplacian = clust.get_laplacian(sym_prund_sim_mat)
+    >>> laplacian = clust.get_laplacian(sym_pruned_sim_mat)
     >>> print (np.around(laplacian[5:,5:], decimals=3))
     [[ 1.999  0.     0.     0.     0.   ]
      [ 0.     2.468 -0.489 -0.982 -0.997]
@@ -793,13 +798,13 @@ class Spec_Clust_unorm:
         sim_mat = self.get_sim_mat(X)
 
         # Refining similarity matrix with p_val
-        prunned_sim_mat = self.p_pruning(sim_mat, p_val)
+        pruned_sim_mat = self.p_pruning(sim_mat, p_val)
 
         # Symmetrization
-        sym_prund_sim_mat = 0.5 * (prunned_sim_mat + prunned_sim_mat.T)
+        sym_pruned_sim_mat = 0.5 * (pruned_sim_mat + pruned_sim_mat.T)
 
         # Laplacian calculation
-        laplacian = self.get_laplacian(sym_prund_sim_mat)
+        laplacian = self.get_laplacian(sym_pruned_sim_mat)
 
         # Get Spectral Embeddings
         emb, num_of_spk = self.get_spec_embs(laplacian, k_oracle)
@@ -842,7 +847,7 @@ class Spec_Clust_unorm:
         -------
         A : array
             (n_samples, n_samples).
-            Prunned affinity matrix based on p_val.
+            pruned affinity matrix based on p_val.
         """
 
         n_elems = int((1 - pval) * A.shape[0])
@@ -914,8 +919,9 @@ class Spec_Clust_unorm:
                         : min(self.max_num_spkrs, len(lambda_gap_list))
                     ]
                 )
-                + 2
-            )
+                if lambda_gap_list
+                else 0
+            ) + 2
 
             if num_of_spk < self.min_num_spkrs:
                 num_of_spk = self.min_num_spkrs
@@ -952,7 +958,7 @@ class Spec_Clust_unorm:
         Returns
         -------
         eig_vals_gap_list : list
-            List of differences (gaps) between adjancent Eigen values.
+            List of differences (gaps) between adjacent Eigen values.
         """
 
         eig_vals_gap_list = []
@@ -970,8 +976,7 @@ class Spec_Clust_unorm:
 def do_spec_clustering(
     diary_obj, out_rttm_file, rec_id, k, pval, affinity_type, n_neighbors
 ):
-    """
-    Performs spectral clustering on embeddings. This function calls specific
+    """Performs spectral clustering on embeddings. This function calls specific
     clustering algorithms as per affinity.
 
     Arguments
@@ -1004,6 +1009,164 @@ def do_spec_clustering(
         )
         clust_obj.perform_sc(diary_obj.stat1, n_neighbors)
         labels = clust_obj.labels_
+
+    # Convert labels to speaker boundaries
+    subseg_ids = diary_obj.segset
+    lol = []
+
+    for i in range(labels.shape[0]):
+        spkr_id = rec_id + "_" + str(labels[i])
+
+        sub_seg = subseg_ids[i]
+
+        splitted = sub_seg.rsplit("_", 2)
+        rec_id = str(splitted[0])
+        sseg_start = float(splitted[1])
+        sseg_end = float(splitted[2])
+
+        a = [rec_id, sseg_start, sseg_end, spkr_id]
+        lol.append(a)
+
+    # Sorting based on start time of sub-segment
+    lol.sort(key=lambda x: float(x[1]))
+
+    # Merge and split in 2 simple steps: (i) Merge sseg of same speakers then (ii) split different speakers
+    # Step 1: Merge adjacent sub-segments that belong to same speaker (or cluster)
+    lol = merge_ssegs_same_speaker(lol)
+
+    # Step 2: Distribute duration of adjacent overlapping sub-segments belonging to different speakers (or cluster)
+    # Taking mid-point as the splitting time location.
+    lol = distribute_overlap(lol)
+
+    # logger.info("Completed diarizing " + rec_id)
+    write_rttm(lol, out_rttm_file)
+
+
+def do_kmeans_clustering(
+    diary_obj, out_rttm_file, rec_id, k_oracle=4, p_val=0.3
+):
+    """Performs kmeans clustering on embeddings.
+
+    Arguments
+    ---------
+    diary_obj : StatObject_SB type
+        Contains embeddings in diary_obj.stat1 and segment IDs in diary_obj.segset.
+    out_rttm_file : str
+        Path of the output RTTM file.
+    rec_id : str
+        Recording ID for the recording under processing.
+    k : int
+        Number of speaker (None, if it has to be estimated).
+    pval : float
+        `pval` for prunning affinity matrix. Used only when number of speakers
+        are unknown. Note that this is just for experiment. Prefer Spectral clustering
+        for better clustering results.
+    """
+
+    if k_oracle is not None:
+        num_of_spk = k_oracle
+    else:
+        # Estimate num of using max eigen gap with `cos` affinity matrix.
+        # This is just for experimentation.
+        # Not doing full spectral clustering. Just re-using the code till
+        # estimating num of speakers.
+        clust_obj = Spec_Clust_unorm(min_num_spkrs=2, max_num_spkrs=10)
+
+        # clust_obj.do_spec_clust(diary_obj.stat1, k_oracle, pval)
+        # labels = clust_obj.labels_
+
+        # Get sim matrix
+        sim_mat = clust_obj.get_sim_mat(diary_obj.stat1)
+        pruned_sim_mat = clust_obj.p_pruning(sim_mat, p_val)
+
+        # Symmetrization
+        sym_pruned_sim_mat = 0.5 * (pruned_sim_mat + pruned_sim_mat.T)
+
+        # Laplacian calculation
+        laplacian = clust_obj.get_laplacian(sym_pruned_sim_mat)
+
+        # Get Spectral Embeddings
+        _, num_of_spk = clust_obj.get_spec_embs(laplacian, k_oracle)
+
+    # Perform kmeans directly on deep embeddings
+    _, labels, _ = k_means(diary_obj.stat1, num_of_spk)
+
+    # Convert labels to speaker boundaries
+    subseg_ids = diary_obj.segset
+    lol = []
+
+    for i in range(labels.shape[0]):
+        spkr_id = rec_id + "_" + str(labels[i])
+
+        sub_seg = subseg_ids[i]
+
+        splitted = sub_seg.rsplit("_", 2)
+        rec_id = str(splitted[0])
+        sseg_start = float(splitted[1])
+        sseg_end = float(splitted[2])
+
+        a = [rec_id, sseg_start, sseg_end, spkr_id]
+        lol.append(a)
+
+    # Sorting based on start time of sub-segment
+    lol.sort(key=lambda x: float(x[1]))
+
+    # Merge and split in 2 simple steps: (i) Merge sseg of same speakers then (ii) split different speakers
+    # Step 1: Merge adjacent sub-segments that belong to same speaker (or cluster)
+    lol = merge_ssegs_same_speaker(lol)
+
+    # Step 2: Distribute duration of adjacent overlapping sub-segments belonging to different speakers (or cluster)
+    # Taking mid-point as the splitting time location.
+    lol = distribute_overlap(lol)
+
+    # logger.info("Completed diarizing " + rec_id)
+    write_rttm(lol, out_rttm_file)
+
+
+def do_AHC(diary_obj, out_rttm_file, rec_id, k_oracle=4, p_val=0.3):
+    """Performs Agglomerative Hierarchical Clustering on embeddings.
+
+    Arguments
+    ---------
+    diary_obj : StatObject_SB type
+        Contains embeddings in diary_obj.stat1 and segment IDs in diary_obj.segset.
+    out_rttm_file : str
+        Path of the output RTTM file.
+    rec_id : str
+        Recording ID for the recording under processing.
+    k : int
+        Number of speaker (None, if it has to be estimated).
+    pval : float
+        `pval` for prunning affinity matrix. Used only when number of speakers
+        are unknown. Note that this is just for experiment. Prefer Spectral clustering
+        for better clustering results.
+    """
+
+    from sklearn.cluster import AgglomerativeClustering
+
+    # p_val is the threshold_val (for AHC)
+    # Normalizing embeddings.
+    diary_obj.norm_stat1()
+
+    # processing
+    if k_oracle is not None:
+        num_of_spk = k_oracle
+
+        clustering = AgglomerativeClustering(
+            n_clusters=num_of_spk, affinity="cosine", linkage="ward",
+        ).fit(diary_obj.stat1)
+        labels = clustering.labels_
+
+    else:
+        # Estimate num of using max eigen gap with `cos` affinity matrix.
+        # This is just for experimentation.
+        clustering = AgglomerativeClustering(
+            n_clusters=None,
+            affinity="cosine",
+            linkage="ward",
+            distance_threshold=p_val,
+        ).fit(diary_obj.stat1)
+        labels = clustering.labels_
 
     # Convert labels to speaker boundaries
     subseg_ids = diary_obj.segset

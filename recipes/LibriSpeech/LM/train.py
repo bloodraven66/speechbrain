@@ -144,7 +144,7 @@ def dataio_prepare(hparams):
     tokenizer = hparams["tokenizer"]
 
     """Define text pipeline"""
-    # TODO: implement text augmentations piplines
+    # TODO: implement text augmentations pipelines
     @sb.utils.data_pipeline.takes("text")
     @sb.utils.data_pipeline.provides("text", "tokens_bos", "tokens_eos")
     def text_pipeline(text):
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     with open(hparams_file) as fin:
         hparams = load_hyperpyyaml(fin, overrides)
 
-    # If distributed_launch=True then
+    # If --distributed_launch then
     # create ddp_group with the right communication protocol
     sb.utils.distributed.ddp_init_group(run_opts)
 

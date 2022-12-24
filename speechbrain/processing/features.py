@@ -10,7 +10,7 @@ Example
 -------
 >>> import torch
 >>> from speechbrain.dataio.dataio import read_audio
->>> signal =read_audio('samples/audio_samples/example1.wav')
+>>> signal =read_audio('tests/samples/single-mic/example1.wav')
 >>> signal = signal.unsqueeze(0)
 >>> compute_STFT = STFT(
 ...     sample_rate=16000, win_length=25, hop_length=10, n_fft=400
@@ -302,6 +302,9 @@ class ISTFT(torch.nn.Module):
         elif len(or_shape) == 4:
             x = x.permute(0, 2, 1, 3)
 
+        # isft ask complex input
+        x = torch.complex(x[..., 0], x[..., 1])
+
         istft = torch.istft(
             input=x,
             n_fft=n_fft,
@@ -380,7 +383,7 @@ class Filterbank(torch.nn.Module):
     ref_value : float
         Reference value used for the dB scale.
     top_db : float
-        Top dB valu used for log-mels.
+        Minimum negative cut-off in decibels.
     freeze : bool
         If False, it the central frequency and the band of each filter are
         added into nn.parameters. If True, the standard frozen features
@@ -518,7 +521,7 @@ class Filterbank(torch.nn.Module):
                 * self.param_change_factor
             )
 
-        # Regularization with random changes of filter central frequnecy and band
+        # Regularization with random changes of filter central frequency and band
         elif self.param_rand_factor != 0 and self.training:
             rand_change = (
                 1.0
@@ -536,6 +539,7 @@ class Filterbank(torch.nn.Module):
 
         # Managing multi-channels case (batch, time, channels)
         if len(sp_shape) == 4:
+            spectrogram = spectrogram.permute(0, 3, 1, 2)
             spectrogram = spectrogram.reshape(
                 sp_shape[0] * sp_shape[3], sp_shape[1], sp_shape[2]
             )
@@ -549,8 +553,9 @@ class Filterbank(torch.nn.Module):
         if len(sp_shape) == 4:
             fb_shape = fbanks.shape
             fbanks = fbanks.reshape(
-                sp_shape[0], fb_shape[1], fb_shape[2], sp_shape[3]
+                sp_shape[0], sp_shape[3], fb_shape[1], fb_shape[2]
             )
+            fbanks = fbanks.permute(0, 2, 3, 1)
 
         return fbanks
 
@@ -692,15 +697,17 @@ class Filterbank(torch.nn.Module):
             A batch of linear FBANK tensors.
 
         """
+
         x_db = self.multiplier * torch.log10(torch.clamp(x, min=self.amin))
         x_db -= self.multiplier * self.db_multiplier
 
-        # Setting up dB max
-        new_x_db_max = torch.tensor(
-            float(x_db.max()) - self.top_db, dtype=x_db.dtype, device=x.device,
-        )
-        # Clipping to dB max
-        x_db = torch.max(x_db, new_x_db_max)
+        # Setting up dB max. It is the max over time and frequency,
+        # Hence, of a whole sequence (sequence-dependent)
+        new_x_db_max = x_db.amax(dim=(-2, -1)) - self.top_db
+
+        # Clipping to dB max. The view is necessary as only a scalar is obtained
+        # per sequence.
+        x_db = torch.max(x_db, new_x_db_max.view(x_db.shape[0], 1, 1))
 
         return x_db
 
@@ -829,7 +836,9 @@ class Deltas(torch.nn.Module):
 
         # Derivative estimation (with a fixed convolutional kernel)
         delta_coeff = (
-            torch.nn.functional.conv1d(x, self.kernel, groups=x.shape[1])
+            torch.nn.functional.conv1d(
+                x, self.kernel.to(x.device), groups=x.shape[1]
+            )
             / self.denom
         )
 
@@ -986,7 +995,6 @@ class InputNormalization(torch.nn.Module):
         self.weight = 1.0
         self.count = 0
         self.eps = 1e-10
-        self.device_inp = torch.device("cpu")
         self.update_until_epoch = update_until_epoch
 
     def forward(self, x, lengths, spk_ids=torch.tensor([]), epoch=0):
@@ -1004,7 +1012,6 @@ class InputNormalization(torch.nn.Module):
             It is used to perform per-speaker normalization when
             norm_type='speaker'.
         """
-        self.device_inp = x.device
         N_batches = x.shape[0]
 
         current_means = []
@@ -1013,7 +1020,7 @@ class InputNormalization(torch.nn.Module):
         for snt_id in range(N_batches):
 
             # Avoiding padded time steps
-            actual_size = int(torch.round(lengths[snt_id] * x.shape[1]))
+            actual_size = torch.round(lengths[snt_id] * x.shape[1]).int()
 
             # computing statistics
             current_mean, current_std = self._compute_current_stats(
@@ -1031,36 +1038,47 @@ class InputNormalization(torch.nn.Module):
 
                 spk_id = int(spk_ids[snt_id][0])
 
-                if spk_id not in self.spk_dict_mean:
+                if self.training:
+                    if spk_id not in self.spk_dict_mean:
 
-                    # Initialization of the dictionary
-                    self.spk_dict_mean[spk_id] = current_mean
-                    self.spk_dict_std[spk_id] = current_std
-                    self.spk_dict_count[spk_id] = 1
+                        # Initialization of the dictionary
+                        self.spk_dict_mean[spk_id] = current_mean
+                        self.spk_dict_std[spk_id] = current_std
+                        self.spk_dict_count[spk_id] = 1
 
-                else:
-                    self.spk_dict_count[spk_id] = (
-                        self.spk_dict_count[spk_id] + 1
-                    )
-
-                    if self.avg_factor is None:
-                        self.weight = 1 / self.spk_dict_count[spk_id]
                     else:
-                        self.weight = self.avg_factor
+                        self.spk_dict_count[spk_id] = (
+                            self.spk_dict_count[spk_id] + 1
+                        )
 
-                    self.spk_dict_mean[spk_id] = (
-                        1 - self.weight
-                    ) * self.spk_dict_mean[spk_id] + self.weight * current_mean
-                    self.spk_dict_std[spk_id] = (
-                        1 - self.weight
-                    ) * self.spk_dict_std[spk_id] + self.weight * current_std
+                        if self.avg_factor is None:
+                            self.weight = 1 / self.spk_dict_count[spk_id]
+                        else:
+                            self.weight = self.avg_factor
 
-                    self.spk_dict_mean[spk_id].detach()
-                    self.spk_dict_std[spk_id].detach()
+                        self.spk_dict_mean[spk_id] = (
+                            (1 - self.weight) * self.spk_dict_mean[spk_id]
+                            + self.weight * current_mean
+                        )
+                        self.spk_dict_std[spk_id] = (
+                            (1 - self.weight) * self.spk_dict_std[spk_id]
+                            + self.weight * current_std
+                        )
 
-                x[snt_id] = (
-                    x[snt_id] - self.spk_dict_mean[spk_id].data
-                ) / self.spk_dict_std[spk_id].data
+                        self.spk_dict_mean[spk_id].detach()
+                        self.spk_dict_std[spk_id].detach()
+
+                    speaker_mean = self.spk_dict_mean[spk_id].data
+                    speaker_std = self.spk_dict_std[spk_id].data
+                else:
+                    if spk_id in self.spk_dict_mean:
+                        speaker_mean = self.spk_dict_mean[spk_id].data
+                        speaker_std = self.spk_dict_std[spk_id].data
+                    else:
+                        speaker_mean = current_mean.data
+                        speaker_std = current_std.data
+
+                x[snt_id] = (x[snt_id] - speaker_mean) / speaker_std
 
         if self.norm_type == "batch" or self.norm_type == "global":
             current_mean = torch.mean(torch.stack(current_means), dim=0)
@@ -1071,35 +1089,36 @@ class InputNormalization(torch.nn.Module):
 
             if self.norm_type == "global":
 
-                if self.count == 0:
-                    self.glob_mean = current_mean
-                    self.glob_std = current_std
+                if self.training:
+                    if self.count == 0:
+                        self.glob_mean = current_mean
+                        self.glob_std = current_std
 
-                elif epoch < self.update_until_epoch:
-                    if self.avg_factor is None:
-                        self.weight = 1 / (self.count + 1)
-                    else:
-                        self.weight = self.avg_factor
+                    elif epoch < self.update_until_epoch:
+                        if self.avg_factor is None:
+                            self.weight = 1 / (self.count + 1)
+                        else:
+                            self.weight = self.avg_factor
 
-                    self.glob_mean = (
-                        1 - self.weight
-                    ) * self.glob_mean + self.weight * current_mean
+                        self.glob_mean = (
+                            1 - self.weight
+                        ) * self.glob_mean + self.weight * current_mean
 
-                    self.glob_std = (
-                        1 - self.weight
-                    ) * self.glob_std + self.weight * current_std
+                        self.glob_std = (
+                            1 - self.weight
+                        ) * self.glob_std + self.weight * current_std
 
-                self.glob_mean.detach()
-                self.glob_std.detach()
+                    self.glob_mean.detach()
+                    self.glob_std.detach()
+
+                    self.count = self.count + 1
 
                 x = (x - self.glob_mean.data) / (self.glob_std.data)
-
-        self.count = self.count + 1
 
         return x
 
     def _compute_current_stats(self, x):
-        """Returns the tensor with the sourrounding context.
+        """Returns the tensor with the surrounding context.
 
         Arguments
         ---------
@@ -1171,6 +1190,17 @@ class InputNormalization(torch.nn.Module):
         self.spk_dict_count = state["spk_dict_count"]
 
         return state
+
+    def to(self, device):
+        """Puts the needed tensors in the right device.
+        """
+        self = super(InputNormalization, self).to(device)
+        self.glob_mean = self.glob_mean.to(device)
+        self.glob_std = self.glob_std.to(device)
+        for spk in self.spk_dict_mean:
+            self.spk_dict_mean[spk] = self.spk_dict_mean[spk].to(device)
+            self.spk_dict_std[spk] = self.spk_dict_std[spk].to(device)
+        return self
 
     @mark_as_saver
     def _save(self, path):

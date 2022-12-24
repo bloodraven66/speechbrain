@@ -1,5 +1,5 @@
 # Template for Speaker Identification
-  
+
 This folder provides a working, well-documented example for training
 a speaker identification model from scratch, based on a few hours of
 data. The data we use is from Mini Librispeech + OpenRIR.
@@ -27,3 +27,5 @@ similar to speech speaker-id (e.g, language-id, emotion classification, ..).
 Please reach out to the SpeechBrain
 team if any errors are found or clarification is needed about how
 parts of the template work. Good Luck!
+
+[For more information, please take a look into the "speaker-id from scratch" tutorial](https://colab.research.google.com/drive/1UwisnAjr8nQF3UnrkIJ4abBMAWzVwBMh?usp=sharing)

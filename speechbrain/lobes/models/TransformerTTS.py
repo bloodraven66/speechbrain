@@ -11,8 +11,50 @@ from speechbrain.nnet.containers import Sequential
 from speechbrain.nnet.embedding import Embedding
 from speechbrain.nnet.dropout import Dropout2d
 from speechbrain.nnet.linear import Linear
+from speechbrain.nnet.loss.guidedattn_loss import GuidedAttentionLoss
+from collections import namedtuple
+
 sys.path.append('../../../')
 from speechbrain.lobes.models.transformer.Transformer import TransformerEncoder, TransformerDecoder, get_key_padding_mask, get_mel_mask
+
+class PositionalEmbedding(nn.Module):
+    """Computation of the positional embeddings.
+    Arguments
+    ---------
+    embed_dim: int
+        dimensionality of the embeddings.
+    """
+
+    def __init__(self, embed_dim):
+        super(PositionalEmbedding, self).__init__()
+        self.demb = embed_dim
+        inv_freq = 1 / (
+            10000 ** (torch.arange(0.0, embed_dim, 2.0) / embed_dim)
+        )
+        self.register_buffer("inv_freq", inv_freq)
+
+    def forward(self, seq_len, mask, dtype):
+        """Computes the forward pass
+        Arguments
+        ---------
+        seq_len: int
+            length of the sequence
+        mask: torch.tensor
+            mask applied to the positional embeddings
+        dtype: str
+            dtype of the embeddings
+        Returns
+        -------
+        pos_emb: torch.Tensor
+            the tensor with positional embeddings
+        """
+        pos_seq = torch.arange(seq_len, device=mask.device).to(dtype)
+
+        sinusoid_inp = torch.matmul(
+            torch.unsqueeze(pos_seq, -1), torch.unsqueeze(self.inv_freq, 0)
+        )
+        pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=1)
+        return pos_emb[None, :, :] * mask
 
 class EncoderPreNet(nn.Module):
     def __init__(self, n_vocab, blank_id, out_channels, dropout, num_layers):
@@ -88,6 +130,14 @@ class TransformerTTS(nn.Module):
         self.dec_num_head = dec_num_head
         self.padding_idx = padding_idx
 
+        self.sinusoidal_positional_embed_encoder = PositionalEmbedding(
+            enc_d_model
+        )
+        self.sinusoidal_positional_embed_decoder = PositionalEmbedding(
+            dec_d_model
+        )
+
+
         self.encPreNet = EncoderPreNet(n_vocab=n_char,
                                         blank_id=padding_idx,
                                         out_channels=enc_d_model,
@@ -129,7 +179,19 @@ class TransformerTTS(nn.Module):
         spec_feats = self.decPreNet(spectogram)
 
         srcmask = get_key_padding_mask(phonemes, pad_idx=self.padding_idx)
-        attn_mask = srcmask.unsqueeze(1).repeat(self.enc_num_head, phoneme_feats.shape[1], 1)
+        srcmask_inverted = (~srcmask).unsqueeze(-1).float()
+        
+        pos = self.sinusoidal_positional_embed_encoder(
+            phoneme_feats.shape[1], srcmask_inverted, phoneme_feats.dtype
+        )
+        # print(phoneme_feats.shape, srcmask_inverted.shape, pos.shape)
+        phoneme_feats = torch.add(phoneme_feats, pos) * srcmask_inverted
+        attn_mask = (
+            srcmask.unsqueeze(-1)
+            .repeat(self.enc_num_head, 1, phoneme_feats.shape[1])
+            .permute(0, 2, 1)
+            .bool()
+        )
 
         if not training:
             attn_mask = None
@@ -138,6 +200,8 @@ class TransformerTTS(nn.Module):
         phoneme_feats, memory = self.encoder(phoneme_feats,
                                             src_mask=attn_mask,
                                             src_key_padding_mask=srcmask)
+                                            
+        phoneme_feats = phoneme_feats * srcmask_inverted
 
         decoder_mel_mask = torch.triu(torch.ones(spec_feats.shape[0],
                                                 spectogram.shape[1],
@@ -150,11 +214,18 @@ class TransformerTTS(nn.Module):
             tgtattn = decoder_mel_mask.gt(0).detach()
         else:
             mask = get_mel_mask(spec_feats, mel_lengths)
+            srcmask_inverted = (~mask).unsqueeze(-1).float()
+            pos = self.sinusoidal_positional_embed_encoder(
+                spec_feats.shape[1], srcmask_inverted, spec_feats.dtype
+            )
+            spec_feats = torch.add(spec_feats, pos) * srcmask_inverted
             attn_mask = srcmask.unsqueeze(-1).repeat(self.dec_num_head, 1, spec_feats.shape[1]).permute(0, 2, 1)
             tgtattn = (mask.unsqueeze(-1).repeat(1, 1, mask.shape[1]) + decoder_mel_mask).detach()
             tgtattn = torch.clamp(tgtattn, min=0, max=1)
 
         tgtattn = tgtattn.repeat(self.dec_num_head, 1, 1)
+
+
         output_mel_feats, sa, multiheadattn = self.decoder(spec_feats, phoneme_feats,
                                                     memory_mask=attn_mask,
                                                     tgt_mask=tgtattn,
@@ -162,7 +233,7 @@ class TransformerTTS(nn.Module):
                                                     tgt_key_padding_mask=mask)
 
         mel_post, mel_linear, stop_token =  self.postNet(output_mel_feats)
-        return mel_post, mel_linear, stop_token, multiheadattn, sa
+        return mel_post, mel_linear, stop_token, multiheadattn
 
 class TextMelCollate:
     """ Zero-pads model inputs and targets based on number of frames per step
@@ -326,3 +397,95 @@ def dynamic_range_compression(x, C=1, clip_val=1e-5):
     """Dynamic range compression for audio signals
     """
     return torch.log(torch.clamp(x, min=clip_val) * C)
+
+LossStats = namedtuple(
+    "TransformerTTSLoss", "loss mel_loss attn_loss attn_weight"
+)
+
+class TTTSLoss(nn.Module):
+    def __init__(
+        self,
+        guided_attention_sigma=None,
+        gate_loss_weight=1.0,
+        guided_attention_weight=1.0,
+        guided_attention_scheduler=None,
+        guided_attention_hard_stop=None,
+    ):
+        super().__init__()
+        if guided_attention_weight == 0:
+            guided_attention_weight = None
+        self.guided_attention_weight = guided_attention_weight
+        self.mel_loss = nn.L1Loss()
+        self.bce_loss = nn.BCEWithLogitsLoss()
+        self.guided_attention_loss = GuidedAttentionLoss(
+            sigma=guided_attention_sigma
+        )
+        self.gate_loss_weight = gate_loss_weight
+        self.guided_attention_weight = guided_attention_weight
+        self.guided_attention_scheduler = guided_attention_scheduler
+        self.guided_attention_hard_stop = guided_attention_hard_stop
+
+    def forward(
+        self, model_output, targets, epoch
+    ):
+        mel_target, target_lengths, input_lengths = targets
+        mel_target.requires_grad = False
+        # gate_target.requires_grad = False
+        # gate_target = gate_target.view(-1, 1)
+
+        mel_out_postnet, mel_out, gate_out, alignments = model_output
+
+        # gate_out = gate_out.view(-1, 1)
+        for i in range(mel_target.shape[0]):
+            if i == 0:
+                mel_post_loss = self.mel_loss(mel_out_postnet[i, :target_lengths[i], :], mel_target[i, :target_lengths[i], :])
+                mel_lin_loss = self.mel_loss(mel_out[i, :target_lengths[i], :], mel_target[i, :target_lengths[i], :])
+            else:
+                mel_post_loss = mel_post_loss + self.mel_loss(mel_out_postnet[i, :target_lengths[i], :], mel_target[i, :target_lengths[i], :])
+                mel_lin_loss = mel_lin_loss + self.mel_loss(mel_out[i, :target_lengths[i], :], mel_target[i, :target_lengths[i], :])
+        mel_post_loss = torch.div(mel_post_loss, len(mel_target))
+        mel_lin_loss = torch.div(mel_lin_loss, len(mel_target))
+        mel_loss = mel_post_loss + mel_lin_loss
+        # gate_loss = self.gate_loss_weight * self.bce_loss(gate_out, gate_target)
+        attn_loss, attn_weight = self.get_attention_loss(
+            alignments, input_lengths, target_lengths, epoch
+        )
+        # total_loss = mel_loss + gate_loss + attn_loss
+        total_loss = mel_loss + attn_loss
+        return LossStats(
+            total_loss, mel_loss, attn_loss, attn_weight
+        )
+
+    def get_attention_loss(
+        self, alignments, input_lengths, target_lengths, epoch,
+    ):
+        zero_tensor = torch.tensor(0.0, device=alignments[0].device)
+        if (
+            self.guided_attention_weight is None
+            or self.guided_attention_weight == 0
+        ):
+            attn_weight, attn_loss = zero_tensor, zero_tensor
+        else:
+            hard_stop_reached = (
+                self.guided_attention_hard_stop is not None
+                and epoch > self.guided_attention_hard_stop
+            )
+            if hard_stop_reached:
+                attn_weight, attn_loss = zero_tensor, zero_tensor
+            else:
+                attn_weight = self.guided_attention_weight
+                if self.guided_attention_scheduler is not None:
+                    _, attn_weight = self.guided_attention_scheduler(epoch)
+            attn_weight = torch.tensor(attn_weight, device=alignments[0].device)
+            for idx in range(len(alignments)):
+                if idx == 0:
+                    
+                    attn_loss = attn_weight * self.guided_attention_loss(
+                        alignments[idx], input_lengths, target_lengths
+                    )
+                else:
+                     attn_loss = attn_loss + attn_weight * self.guided_attention_loss(
+                        alignments[idx], input_lengths, target_lengths
+                    )
+            # attn_loss = attn_loss/len(alignments)
+        return attn_loss, attn_weight

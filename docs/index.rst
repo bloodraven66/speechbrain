@@ -3,10 +3,7 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-SpeechBrain
-=======================================
-
-.. image:: images/logo_noname_rounded_big.png
+.. image:: images/speechbrain-logo.svg
   :width: 400
   :align: center
 
@@ -17,7 +14,7 @@ please refer to the official `Github <https://github.com/speechbrain/speechbrain
 or the official `Website <https://speechbrain.github.io>`
 
 
-Licence
+License
 --------
 
 SpeechBrain is released under the Apache license, version 2.0. The Apache license is a popular BSD-like license.
@@ -31,13 +28,13 @@ Referencing SpeechBrain
 --------
 .. code-block:: txt
 
-  @misc{SB2021,
-  author = {Ravanelli, Mirco and Parcollet, Titouan and Rouhe, Aku and Plantinga, Peter and Rastorgueva, Elena and Lugosch, Loren and Dawalatabad, Nauman and Ju-Chieh, Chou and Heba, Abdel and Grondin, Francois and Aris, William and Liao, Chien-Feng and Cornell, Samuele and Yeh, Sung-Lin and Na, Hwidong and Gao, Yan and Fu, Szu-Wei and Subakan, Cem and De Mori, Renato and Bengio, Yoshua },
-  title = {SpeechBrain},
-  year = {2021},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{https://github.com/speechbrain/speechbrain}},
+  @misc{speechbrain,
+      title={SpeechBrain: A General-Purpose Speech Toolkit},
+      author={Mirco Ravanelli and Titouan Parcollet and Peter Plantinga and Aku Rouhe and Samuele Cornell and Loren Lugosch and Cem Subakan and Nauman Dawalatabad and Abdelwahab Heba and Jianyuan Zhong and Ju-Chieh Chou and Sung-Lin Yeh and Szu-Wei Fu and Chien-Feng Liao and Elena Rastorgueva and François Grondin and William Aris and Hwidong Na and Yan Gao and Renato De Mori and Yoshua Bengio},
+      year={2021},
+      eprint={2106.04624},
+      archivePrefix={arXiv},
+      primaryClass={eess.AS}
   }
 
 
