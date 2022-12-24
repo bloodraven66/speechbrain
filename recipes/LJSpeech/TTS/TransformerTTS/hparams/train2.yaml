@@ -50,8 +50,9 @@ mel_normalized: False
 learning_rate: 0.0001
 weight_decay: 0.000006
 grad_clip_thresh: 5.0
-batch_size: 48 #minimum 2
+batch_size: 40 #minimum 2
 mask_padding: False
+grad_accumulation_factor: 2
 
 ################################
 # Model Parameters and model   #

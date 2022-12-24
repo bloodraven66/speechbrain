@@ -24,19 +24,28 @@ from recipes.LJSpeech.TTS.common.utils import PretrainedModelMixin, ProgressSamp
 
 logger = logging.getLogger(__name__)
 
-class TransformerTTSBrain(sb.Brain, PretrainedModelMixin, ProgressSampleImageMixin):
+class TransformerTTSBrain(sb.Brain):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.init_progress_samples()
+    # def __init__(self, *args, **kwargs):
+    #     super().__init__(*args, **kwargs)
+    #     self.init_progress_samples()
 
     def compute_forward(self, batch, stage):
         inputs, y = batch_to_gpu(batch)
         return self.hparams.model(*inputs)  # 1#2#
 
     def fit_batch(self, batch):
-        result = super().fit_batch(batch)
-        return result
+        # result = super().fit_batch(batch)
+        should_step = self.step % self.grad_accumulation_factor == 0
+        outputs = self.compute_forward(batch, sb.Stage.TRAIN)
+        loss = self.compute_objectives(outputs, batch, sb.Stage.TRAIN)
+        (loss / self.grad_accumulation_factor).backward()
+        if should_step:
+            if self.check_gradients(loss):
+                self.optimizer.step()
+            self.optimizer.zero_grad()
+            self.optimizer_step += 1
+        return loss.detach().cpu()
 
     def compute_objectives(self, predictions, batch, stage):
         x, y = batch_to_gpu(batch)
@@ -88,7 +97,7 @@ class TransformerTTSBrain(sb.Brain, PretrainedModelMixin, ProgressSampleImageMix
 
             # The train_logger writes a summary to stdout and to the logfile.
             self.hparams.train_logger.log_stats(  # 1#2#
-                stats_meta={"Epoch": epoch, "lr": lr},
+                stats_meta={"Epoch": epoch, "lr": lr, "steps":self.optimizer_step},
                 train_stats={"loss": self.train_loss},
                 valid_stats=stats,
             )
