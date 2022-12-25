@@ -95,12 +95,24 @@ class PostNet(nn.Module):
 
         layers = []
         for idx in range(num_layers):
+            layers.append(torch.nn.LeakyReLU())
             layers.append(CNN.Conv1d(in_channels=n_mels, out_channels=n_mels, kernel_size=1))
         self.layers = Sequential(*layers)
 
-    def forward(self, x):
-        x_mel = self.melLinear(x)
-        return self.layers(x_mel)+x_mel, x_mel, self.stopLinear(x)
+    def forward(self, x, mask):
+        # import matplotlib.pyplot as plt
+        # plt.imshow(x[-10].detach().cpu().numpy())
+        # plt.savefig('before')
+        # plt.clf()
+        x_mel = self.melLinear(x) * mask
+        # res = x_mel.clone()
+        # print(x_mel.shape, mask.shape)
+        # import matplotlib.pyplot as plt
+        # plt.imshow(x_mel[-10].detach().cpu().numpy())
+        # plt.savefig('after')
+        # plt.clf()
+        # exit()
+        return self.layers(x_mel)* mask, x_mel, self.stopLinear(x)
 
 class TransformerTTS(nn.Module):
     def __init__(self, pre_net_dropout,
@@ -180,7 +192,7 @@ class TransformerTTS(nn.Module):
 
         srcmask = get_key_padding_mask(phonemes, pad_idx=self.padding_idx)
         srcmask_inverted = (~srcmask).unsqueeze(-1).float()
-        
+        # print(srcmask.shape, srcmask_inverted)
         pos = self.sinusoidal_positional_embed_encoder(
             phoneme_feats.shape[1], srcmask_inverted, phoneme_feats.dtype
         )
@@ -192,7 +204,11 @@ class TransformerTTS(nn.Module):
             .permute(0, 2, 1)
             .bool()
         )
-
+        # print(attn_mask[-2])
+        # import matplotlib.pyplot as plt
+        # plt.imshow(attn_mask[-2].detach().cpu().numpy())
+        # plt.savefig('enc attn')
+        # plt.clf()
         if not training:
             attn_mask = None
             srcmask = None
@@ -222,7 +238,10 @@ class TransformerTTS(nn.Module):
             attn_mask = srcmask.unsqueeze(-1).repeat(self.dec_num_head, 1, spec_feats.shape[1]).permute(0, 2, 1)
             tgtattn = (mask.unsqueeze(-1).repeat(1, 1, mask.shape[1]) + decoder_mel_mask).detach()
             tgtattn = torch.clamp(tgtattn, min=0, max=1)
-
+            # import matplotlib.pyplot as plt
+            # plt.imshow(mask.detach().cpu().numpy())
+            # plt.savefig('mel mask')
+            # plt.clf()
         tgtattn = tgtattn.repeat(self.dec_num_head, 1, 1)
 
 
@@ -231,8 +250,9 @@ class TransformerTTS(nn.Module):
                                                     tgt_mask=tgtattn,
                                                     memory_key_padding_mask=srcmask,
                                                     tgt_key_padding_mask=mask)
+        output_mel_feats = output_mel_feats * srcmask_inverted
+        mel_post, mel_linear, stop_token =  self.postNet(output_mel_feats, srcmask_inverted)
 
-        mel_post, mel_linear, stop_token =  self.postNet(output_mel_feats)
         return mel_post, mel_linear, stop_token, multiheadattn
 
 class TextMelCollate:

@@ -51,7 +51,7 @@ mel_normalized: False
 ################################
 # Optimization Hyperparameters #
 ################################
-learning_rate: 0.0001
+learning_rate: 0.001
 weight_decay: 0.000006
 grad_clip_thresh: 5.0
 batch_size: 48 #minimum 2
@@ -185,7 +185,7 @@ train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
 
 noam_annealing: !new:speechbrain.nnet.schedulers.NoamScheduler
     lr_initial: !ref <learning_rate>
-    n_warmup_steps: 25000
+    n_warmup_steps: 4000
 
 #checkpointer
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
