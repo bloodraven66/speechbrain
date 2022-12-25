@@ -33,7 +33,7 @@ class PositionalEmbedding(nn.Module):
         )
         self.register_buffer("inv_freq", inv_freq)
 
-    def forward(self, seq_len, mask, dtype):
+    def forward(self, seq_len, mask, dtype, device):
         """Computes the forward pass
         Arguments
         ---------
@@ -48,12 +48,14 @@ class PositionalEmbedding(nn.Module):
         pos_emb: torch.Tensor
             the tensor with positional embeddings
         """
-        pos_seq = torch.arange(seq_len, device=mask.device).to(dtype)
+        pos_seq = torch.arange(seq_len, device=device).to(dtype)
 
         sinusoid_inp = torch.matmul(
             torch.unsqueeze(pos_seq, -1), torch.unsqueeze(self.inv_freq, 0)
         )
         pos_emb = torch.cat([sinusoid_inp.sin(), sinusoid_inp.cos()], dim=1)
+        if mask is None:
+            return pos_emb[None, :, :]
         return pos_emb[None, :, :] * mask
 
 class EncoderPreNet(nn.Module):
@@ -104,7 +106,10 @@ class PostNet(nn.Module):
         # plt.imshow(x[-10].detach().cpu().numpy())
         # plt.savefig('before')
         # plt.clf()
-        x_mel = self.melLinear(x) * mask
+        x_mel = self.melLinear(x) 
+        if mask is not None:
+            x_mel = x_mel * mask
+        
         # res = x_mel.clone()
         # print(x_mel.shape, mask.shape)
         # import matplotlib.pyplot as plt
@@ -112,7 +117,8 @@ class PostNet(nn.Module):
         # plt.savefig('after')
         # plt.clf()
         # exit()
-        return self.layers(x_mel)* mask, x_mel, self.stopLinear(x)
+        # return self.layers(x_mel)* mask, x_mel, self.stopLinear(x)
+        return x_mel, x_mel, self.stopLinear(x)
 
 class TransformerTTS(nn.Module):
     def __init__(self, pre_net_dropout,
@@ -133,7 +139,8 @@ class TransformerTTS(nn.Module):
                     dec_v_dim,
                     dec_dropout,
                     normalize_before,
-                    ffn_type,
+                    enc_ffn_type,
+                    dec_ffn_type,
                     n_char,
                     n_mels,
                     padding_idx):
@@ -168,7 +175,7 @@ class TransformerTTS(nn.Module):
                                         dropout=enc_dropout,
                                         activation=nn.ReLU,
                                         normalize_before=normalize_before,
-                                        ffn_type=ffn_type)
+                                        ffn_type=enc_ffn_type)
 
         self.decoder = TransformerDecoder(num_layers=dec_num_layers,
                                         nhead=dec_num_head,
@@ -179,22 +186,25 @@ class TransformerTTS(nn.Module):
                                         dropout=dec_dropout,
                                         activation=nn.ReLU,
                                         normalize_before=normalize_before,
-                                        ffn_type=ffn_type)
+                                        ffn_type=dec_ffn_type)
 
         self.postNet = PostNet(model_d=dec_d_model,
                                 n_mels=n_mels,
                                 num_layers=post_net_num_layers)
 
     def forward(self, phonemes, spectogram, mel_lengths, training=True):
+
+
         phoneme_feats = self.encPreNet(phonemes)
+        
         spectogram = spectogram.transpose(1, 2)
         spec_feats = self.decPreNet(spectogram)
-
+        
         srcmask = get_key_padding_mask(phonemes, pad_idx=self.padding_idx)
         srcmask_inverted = (~srcmask).unsqueeze(-1).float()
         # print(srcmask.shape, srcmask_inverted)
         pos = self.sinusoidal_positional_embed_encoder(
-            phoneme_feats.shape[1], srcmask_inverted, phoneme_feats.dtype
+            phoneme_feats.shape[1], srcmask_inverted, phoneme_feats.dtype, phoneme_feats.device
         )
         # print(phoneme_feats.shape, srcmask_inverted.shape, pos.shape)
         phoneme_feats = torch.add(phoneme_feats, pos) * srcmask_inverted
@@ -209,39 +219,34 @@ class TransformerTTS(nn.Module):
         # plt.imshow(attn_mask[-2].detach().cpu().numpy())
         # plt.savefig('enc attn')
         # plt.clf()
-        if not training:
-            attn_mask = None
-            srcmask = None
+       
 
         phoneme_feats, memory = self.encoder(phoneme_feats,
                                             src_mask=attn_mask,
                                             src_key_padding_mask=srcmask)
-                                            
+        
+
         phoneme_feats = phoneme_feats * srcmask_inverted
 
         decoder_mel_mask = torch.triu(torch.ones(spec_feats.shape[0],
                                                 spectogram.shape[1],
                                                 spectogram.shape[1]),
                                                 diagonal=1).to(spec_feats.device)
-        if not training:
-            attn_mask = None
-            srcmask = None
-            mask = None
-            tgtattn = decoder_mel_mask.gt(0).detach()
-        else:
-            mask = get_mel_mask(spec_feats, mel_lengths)
-            srcmask_inverted = (~mask).unsqueeze(-1).float()
-            pos = self.sinusoidal_positional_embed_encoder(
-                spec_feats.shape[1], srcmask_inverted, spec_feats.dtype
-            )
-            spec_feats = torch.add(spec_feats, pos) * srcmask_inverted
-            attn_mask = srcmask.unsqueeze(-1).repeat(self.dec_num_head, 1, spec_feats.shape[1]).permute(0, 2, 1)
-            tgtattn = (mask.unsqueeze(-1).repeat(1, 1, mask.shape[1]) + decoder_mel_mask).detach()
-            tgtattn = torch.clamp(tgtattn, min=0, max=1)
-            # import matplotlib.pyplot as plt
-            # plt.imshow(mask.detach().cpu().numpy())
-            # plt.savefig('mel mask')
-            # plt.clf()
+        
+        
+        mask = get_mel_mask(spec_feats, mel_lengths)
+        srcmask_inverted = (~mask).unsqueeze(-1).float()
+        pos = self.sinusoidal_positional_embed_encoder(
+            spec_feats.shape[1], srcmask_inverted, spec_feats.dtype, spec_feats.device
+        )
+        spec_feats = torch.add(spec_feats, pos) * srcmask_inverted
+        attn_mask = srcmask.unsqueeze(-1).repeat(self.dec_num_head, 1, spec_feats.shape[1]).permute(0, 2, 1)
+        tgtattn = (mask.unsqueeze(-1).repeat(1, 1, mask.shape[1]) + decoder_mel_mask).detach()
+        tgtattn = torch.clamp(tgtattn, min=0, max=1)
+        # import matplotlib.pyplot as plt
+        # plt.imshow(mask.detach().cpu().numpy())
+        # plt.savefig('mel mask')
+        # plt.clf()
         tgtattn = tgtattn.repeat(self.dec_num_head, 1, 1)
 
 
@@ -250,11 +255,41 @@ class TransformerTTS(nn.Module):
                                                     tgt_mask=tgtattn,
                                                     memory_key_padding_mask=srcmask,
                                                     tgt_key_padding_mask=mask)
+
+
+  
         output_mel_feats = output_mel_feats * srcmask_inverted
         mel_post, mel_linear, stop_token =  self.postNet(output_mel_feats, srcmask_inverted)
-
+        
         return mel_post, mel_linear, stop_token, multiheadattn
 
+    def infer(self, phonemes):
+        assert len(phonemes.shape) == 2
+        assert phonemes.shape[0] == 1
+        phoneme_feats = self.encPreNet(phonemes)
+        pos = self.sinusoidal_positional_embed_encoder(
+            phoneme_feats.shape[1], None, phoneme_feats.dtype, phoneme_feats.device
+        )
+        phoneme_feats = torch.add(phoneme_feats, pos)
+        phoneme_feats, memory = self.encoder(phoneme_feats,
+                                            src_mask=None,
+                                            src_key_padding_mask=None)
+        spectogram = torch.ones((1, 1, 80)).to(phoneme_feats.device)
+        for i in range(600):
+            spec_feats = self.decPreNet(spectogram)
+            pos = self.sinusoidal_positional_embed_encoder(
+            spec_feats.shape[1], None, spec_feats.dtype, spec_feats.device
+            )
+            spec_feats = torch.add(spec_feats, pos)
+            output_mel_feats, sa, multiheadattn = self.decoder(spec_feats, phoneme_feats,
+                                                    memory_mask=None,
+                                                    tgt_mask=None,
+                                                    memory_key_padding_mask=None,
+                                                    tgt_key_padding_mask=None)
+            mel_post, mel_linear, stop_token =  self.postNet(output_mel_feats, None)
+            spectogram = torch.cat([spectogram, mel_post[:, -1:, :]], 1)
+        spectogram = spectogram[:, 1:, :]
+        return spectogram
 class TextMelCollate:
     """ Zero-pads model inputs and targets based on number of frames per step
     Arguments
@@ -319,6 +354,7 @@ class TextMelCollate:
         mel_padded = torch.FloatTensor(len(batch), num_mels, max_target_len)
         mel_shifted_padded = torch.FloatTensor(len(batch), num_mels, max_target_len)
         mel_padded.zero_()
+        mel_shifted_padded.zero_()
 
         output_lengths = torch.LongTensor(len(batch))
         labels, wavs = [], []
@@ -346,6 +382,8 @@ class TextMelCollate:
             labels,
             wavs
         )
+    
+    
 def mel_spectogram(
     sample_rate,
     hop_length,

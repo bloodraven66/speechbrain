@@ -58,7 +58,7 @@ batch_size: 48 #minimum 2
 guided_attention_sigma: 0.2
 guided_attention_weight: 50.0
 guided_attention_weight_half_life: 10.
-guided_attention_hard_stop: 50
+guided_attention_hard_stop: 750
 gate_loss_weight: 1.0
 ################################
 # Model Parameters and model   #
@@ -93,7 +93,8 @@ post_net_num_layers: 5
 
 # common
 normalize_before: False
-ffn_type: 1dcnn #1dcnn or ffn
+enc_ffn_type: 1dcnn #1dcnn or ffn
+dec_ffn_type: ffn
 #model
 model: !new:speechbrain.lobes.models.TransformerTTS.TransformerTTS
     pre_net_dropout: !ref <pre_net_dropout>
@@ -114,7 +115,8 @@ model: !new:speechbrain.lobes.models.TransformerTTS.TransformerTTS
     dec_v_dim: !ref <dec_v_dim>
     dec_dropout: !ref <dec_dropout>
     normalize_before: !ref <normalize_before>
-    ffn_type: !ref <ffn_type>
+    enc_ffn_type: !ref <enc_ffn_type>
+    dec_ffn_type: !ref <dec_ffn_type>
     n_char: !ref <n_symbols>
     n_mels: !ref <n_mel_channels>
     padding_idx: !ref <padding_idx>

@@ -57,6 +57,7 @@ class TransformerTTSBrain(sb.Brain):
 
     def compute_objectives(self, predictions, batch, stage):
         x, y = batch_to_gpu(batch)
+        self.last_batch = (x,y)
         self._remember_sample(x, y, predictions)
         loss_stats = self.hparams.criterion(predictions, y, self.last_epoch)
         self.last_loss_stats[stage] = scalarize(loss_stats)
@@ -135,9 +136,9 @@ class TransformerTTSBrain(sb.Brain):
                 self.hparams.progress_samples
                 and epoch % self.hparams.progress_samples_interval == 0
             )
-            # if output_progress_sample:
-            #     self.run_inference_sample()
-            #     self.hparams.progress_sample_logger.save(epoch)
+            if output_progress_sample:
+                self.run_inference_sample()
+                self.hparams.progress_sample_logger.save(epoch)
 
         # We also write statistics about test data to stdout and to the logfile.
         if stage == sb.Stage.TEST:
@@ -149,19 +150,21 @@ class TransformerTTSBrain(sb.Brain):
             #     self.run_inference_sample()
             #     self.hparams.progress_sample_logger.save("test")
 
-    # def run_inference_sample(self):
-    #     """Produces a sample in inference mode. This is called when producing
-    #     samples and can be useful because"""
-    #     if self.last_batch is None:
-    #         return
-    #     inputs, _, _, _, _ = self.last_batch
-    #     text_padded, input_lengths, _, _, _ = inputs
-    #     mel_out, _, _ = self.hparams.model.infer(
-    #         text_padded[:1], input_lengths[:1]
-    #     )
-    #     self.hparams.progress_sample_logger.remember(
-    #         inference_mel_out=self._get_spectrogram_sample(mel_out)
-    #     )
+    def run_inference_sample(self):
+        """Produces a sample in inference mode. This is called when producing
+        samples and can be useful because"""
+        if self.last_batch is None:
+            return
+        x, y = self.last_batch
+        (phonemes, mel_shifted_padded, mel_lengths) = x
+
+        mel_out = self.hparams.model.infer(
+                phonemes[0].unsqueeze(0)
+            )
+
+        self.hparams.progress_sample_logger.remember(
+            inference_mel_out=self._get_spectrogram_sample(mel_out)
+        )
 
 def dataio_prepare(hparams):
 # Define audio pipeline:\
@@ -286,14 +289,14 @@ def main():
         checkpointer=hparams["checkpointer"],
     )
     # Training
-    with torch.autograd.detect_anomaly():
-        transformertts_brain.fit(
-            transformertts_brain.hparams.epoch_counter,
-            datasets["train"],
-            datasets["valid"],
-            train_loader_kwargs=hparams["train_dataloader_opts"],
-            valid_loader_kwargs=hparams["valid_dataloader_opts"],
-        )
+    # with torch.autograd.detect_anomaly():
+    transformertts_brain.fit(
+        transformertts_brain.hparams.epoch_counter,
+        datasets["train"],
+        datasets["valid"],
+        train_loader_kwargs=hparams["train_dataloader_opts"],
+        valid_loader_kwargs=hparams["valid_dataloader_opts"],
+    )
 
 
 
